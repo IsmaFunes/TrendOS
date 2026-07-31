@@ -1,0 +1,43 @@
+[
+  {
+    "externalAdId": "sample-ar-001",
+    "pageId": "page-sample-001",
+    "pageName": "Casa & Ofertas AR",
+    "platforms": ["facebook", "instagram"],
+    "body": "Llevá 2 y pagá 1. Envío gratis a todo el país. Stock limitado.",
+    "cta": "Shop now",
+    "snapshotUrl": "https://www.facebook.com/ads/library/?id=sample-ar-001",
+    "mediaUrls": [],
+    "destinationUrl": "https://ejemplo-tienda.mitiendanube.com/productos/oferta",
+    "searchTerm": "envio gratis",
+    "isActive": true,
+    "startedAt": 1753056000000
+  },
+  {
+    "externalAdId": "sample-ar-002",
+    "pageId": "page-sample-002",
+    "pageName": "Pet Shop Viral",
+    "platforms": ["facebook"],
+    "body": "Cepillo para mascotas: 3 cuotas sin interés. Mirá por qué todos lo están pidiendo.",
+    "cta": "Learn more",
+    "snapshotUrl": "https://www.facebook.com/ads/library/?id=sample-ar-002",
+    "mediaUrls": [],
+    "destinationUrl": "https://petshop-demo.myshopify.com/products/cepillo",
+    "searchTerm": "cuotas sin interes",
+    "isActive": true,
+    "startedAt": 1753142400000
+  },
+  {
+    "externalAdId": "sample-ar-003",
+    "pageId": "page-sample-001",
+    "pageName": "Casa & Ofertas AR",
+    "platforms": ["instagram"],
+    "body": "Organizador de cocina 2x1. Probá 7 días en casa.",
+    "cta": "Shop now",
+    "mediaUrls": [],
+    "destinationUrl": "https://ejemplo-tienda.mitiendanube.com/productos/organizador",
+    "searchTerm": "2x1",
+    "isActive": true,
+    "startedAt": 1753228800000
+  }
+]

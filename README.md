@@ -1,55 +1,52 @@
 # TrendOS
 
-Intelligence de tendencias para sellers de e-commerce en LATAM.
+Encontrá productos que ya se están anunciando en Meta en **Argentina**.
 
-**MVP:** Trends — productos muy vendidos + keywords, score 0–1, refresh cada 8h.
+**MVP:** onboarding simple + explorador de anuncios (scrape Ad Library AR).
+
+Producto: [`docs/product-context.md`](docs/product-context.md) · Keys: [`docs/trend-radar-api-keys.md`](docs/trend-radar-api-keys.md)
 
 ## Stack
 
-- Next.js (App Router) + Vercel
-- Convex (DB, crons, actions)
+- Next.js (App Router)
+- Convex (DB + ingest)
 - Clerk (auth)
-- Mercado Libre API (best sellers + trends)
-- SerpAPI (Google Trends, opcional)
-- Gemini (web buzz + match a ML + explicaciones, opcional)
+- Playwright worker (Meta Ad Library scrape)
 
 ## Setup local
 
 ```bash
 npm install
 cp .env.example .env.local
-# Completar Clerk + Convex (+ ML/SerpAPI/Gemini opcionales)
+# Completar Clerk + Convex + META_ADS_INGEST_SECRET
 
-npx convex dev   # en una terminal
-npm run dev      # en otra
+npx convex dev   # terminal 1
+npm run dev      # terminal 2
 ```
 
 ### Clerk + Convex
 
-1. Creá una app en [Clerk](https://dashboard.clerk.com).
-2. En Clerk → JWT Templates → New → **Convex**.
-3. En Convex Dashboard → Settings → Environment Variables:
-   - `CLERK_JWT_ISSUER_DOMAIN` = `https://YOUR_INSTANCE.clerk.accounts.dev`
-4. Copiá `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` y `CLERK_SECRET_KEY` a `.env.local`.
-
-### Mercado Libre
-
-Sin credenciales, la ingestión usa **datos demo** para que el dashboard funcione.
-
-Con credenciales (Convex env):
-
-- `MERCADOLIBRE_ACCESS_TOKEN` **o**
-- `MERCADOLIBRE_CLIENT_ID` + `MERCADOLIBRE_CLIENT_SECRET` + `MERCADOLIBRE_REFRESH_TOKEN`
+1. App en [Clerk](https://dashboard.clerk.com) → JWT template **Convex**.
+2. Convex env: `CLERK_JWT_ISSUER_DOMAIN`
+3. `.env.local`: `NEXT_PUBLIC_CLERK_*` + `CLERK_SECRET_KEY` + `NEXT_PUBLIC_CONVEX_URL`
 
 ### Primeros datos
 
-Desde la UI: **Trends → Actualizar ahora**.
-
-O por CLI:
+1. Login → onboarding
+2. Seed de anuncios de prueba:
 
 ```bash
-npx convex run categories:seed
-npx convex run internal/ingestion:runAll '{"siteId":"MLA"}'
+npx convex env set META_ADS_INGEST_SECRET "dev-secret"
+META_ADS_INGEST_SECRET=dev-secret CONVEX_URL="$NEXT_PUBLIC_CONVEX_URL" \
+  npm run scrape:meta-ads:seed
+```
+
+3. Abrí `/ads`
+
+Scrape real (AR):
+
+```bash
+npm run scrape:meta-ads -- --term "envio gratis" --limit 30
 ```
 
 ## Scripts
@@ -58,18 +55,11 @@ npx convex run internal/ingestion:runAll '{"siteId":"MLA"}'
 |---|---|
 | `npm run dev` | Next.js |
 | `npm run convex:dev` | Convex watcher |
-| `npm run build` | Build producción |
-| `npm run lint` | ESLint |
+| `npm run scrape:meta-ads` | Scraper Playwright AR |
+| `npm run scrape:meta-ads:seed` | Ingest sample ads |
+| `npm run typecheck` | TypeScript |
+| `npm test` | Vitest |
 
 ## Deploy (Vercel)
 
-1. Push a GitHub (cuando quieras publicar).
-2. Importá el repo en Vercel.
-3. Configurá las env vars de `.env.example`.
-4. En Convex: `npx convex deploy` (producción) y linkeá `NEXT_PUBLIC_CONVEX_URL`.
-
-## Planes (preparado)
-
-- `users.plan`: `free` | `pro`
-- `users.refreshIntervalHours`: default `8` (PRO más rápido en el futuro)
-- Cron global MVP: cada 8 horas (`convex/crons.ts`)
+Clerk + `NEXT_PUBLIC_CONVEX_URL`. Secrets de scrape en Convex Dashboard (no Gemini/SerpAPI obligatorios).

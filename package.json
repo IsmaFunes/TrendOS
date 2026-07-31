@@ -9,7 +9,12 @@
     "lint": "eslint .",
     "convex:dev": "convex dev",
     "convex:deploy": "convex deploy",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "scrape:meta-ads": "node scripts/meta-ad-scraper/scrape.mjs",
+    "scrape:meta-ads:queue": "node scripts/meta-ad-scraper/scrape.mjs --queue",
+    "scrape:meta-ads:seed": "node scripts/meta-ad-scraper/scrape.mjs --seed scripts/meta-ad-scraper/seed-sample.json"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.5.21",
@@ -23,12 +28,14 @@
   "devDependencies": {
     "@convex-dev/eslint-plugin": "^2.0.0",
     "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
+    "@types/node": "^20.19.43",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.11",
+    "playwright": "^1.62.1",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^3.2.4"
   }
 }

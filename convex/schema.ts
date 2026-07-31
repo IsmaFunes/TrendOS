@@ -1,5 +1,14 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import {
+  classificationValidator,
+  dataSourceValidator,
+  explanationValidator,
+  jobStatusValidator,
+  jobTypeValidator,
+  productStatusValidator,
+  reviewStatusValidator,
+} from "./radar/validators";
 
 export default defineSchema({
   users: defineTable({
@@ -21,12 +30,30 @@ export default defineSchema({
     businessName: v.string(),
     description: v.optional(v.string()),
     nicheKeywords: v.optional(v.array(v.string())),
+    /** Products / themes the business will not sell. */
+    excludedKeywords: v.optional(v.array(v.string())),
     channels: v.optional(v.array(v.string())),
+    goal: v.optional(
+      v.union(
+        v.literal("start_ecommerce"),
+        v.literal("create_store"),
+        v.literal("add_products"),
+        v.literal("grow_sales"),
+        v.literal("browse_ads"),
+      ),
+    ),
+    existingStoreUrl: v.optional(v.string()),
     monthlyRevenueRange: v.optional(v.string()),
     targetMarginPercent: v.optional(v.number()),
     notes: v.optional(v.string()),
+    hasWarehouseStorage: v.optional(v.boolean()),
+    storageNotes: v.optional(v.string()),
+    logisticsConstraints: v.optional(v.string()),
+    /** Shared niche bucket for ad reuse across similar stores. */
+    nicheId: v.optional(v.id("radarNiches")),
     updatedAt: v.number(),
-  }).index("by_user", ["userId"]),
+  }).index("by_user", ["userId"])
+    .index("by_niche", ["nicheId"]),
 
   categories: defineTable({
     slug: v.string(),
@@ -49,94 +76,406 @@ export default defineSchema({
     .index("by_user_and_category", ["userId", "categoryId"])
     .index("by_category", ["categoryId"]),
 
-  trendRuns: defineTable({
-    siteId: v.string(),
-    /** Fingerprint of store niche; missing/"" = legacy baseline. Always set on new runs. */
-    nicheKey: v.optional(v.string()),
+  // ─── Trend Radar module ───────────────────────────────────────────
+
+  /** Normalized product (not a marketplace listing). */
+  radarProducts: defineTable({
+    canonicalName: v.string(),
+    slug: v.string(),
+    description: v.optional(v.string()),
+    brand: v.optional(v.string()),
+    model: v.optional(v.string()),
+    categoryId: v.optional(v.id("categories")),
+    status: productStatusValidator,
+    country: v.string(),
+    isDemo: v.optional(v.boolean()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_slug", ["slug"])
+    .index("by_status", ["status"])
+    .index("by_category", ["categoryId"])
+    .index("by_canonical", ["canonicalName"]),
+
+  radarProductAliases: defineTable({
+    productId: v.id("radarProducts"),
+    alias: v.string(),
+    normalizedAlias: v.string(),
+    source: dataSourceValidator,
+    createdAt: v.number(),
+  })
+    .index("by_product", ["productId"])
+    .index("by_normalized", ["normalizedAlias"])
+    .index("by_product_and_normalized", ["productId", "normalizedAlias"]),
+
+  radarMarketplaceListings: defineTable({
+    productId: v.id("radarProducts"),
+    source: dataSourceValidator,
+    externalId: v.string(),
+    externalUrl: v.optional(v.string()),
+    title: v.string(),
+    sellerId: v.optional(v.string()),
+    sellerName: v.optional(v.string()),
+    currency: v.optional(v.string()),
+    currentPrice: v.optional(v.number()),
+    originalPrice: v.optional(v.number()),
+    availableQuantity: v.optional(v.number()),
+    condition: v.optional(v.string()),
+    categoryExternalId: v.optional(v.string()),
+    metadataJson: v.optional(v.string()),
+    firstSeenAt: v.number(),
+    lastSeenAt: v.number(),
+    isActive: v.boolean(),
+  })
+    .index("by_product", ["productId"])
+    .index("by_source_external", ["source", "externalId"])
+    .index("by_active", ["isActive"])
+    .index("by_source_active", ["source", "isActive"]),
+
+  /**
+   * Historical state. Idempotency key: productId + source + periodKey
+   * (periodKey = YYYY-MM-DD for daily captures).
+   */
+  radarProductSnapshots: defineTable({
+    productId: v.id("radarProducts"),
+    listingId: v.optional(v.id("radarMarketplaceListings")),
+    source: dataSourceValidator,
+    capturedAt: v.number(),
+    /** Daily bucket for idempotent inserts, e.g. "2026-07-23". */
+    periodKey: v.string(),
+    price: v.optional(v.number()),
+    originalPrice: v.optional(v.number()),
+    reviewCount: v.optional(v.number()),
+    rating: v.optional(v.number()),
+    soldQuantity: v.optional(v.number()),
+    availableQuantity: v.optional(v.number()),
+    searchPosition: v.optional(v.number()),
+    sellerCount: v.optional(v.number()),
+    listingCount: v.optional(v.number()),
+    mentionCount: v.optional(v.number()),
+    viewCount: v.optional(v.number()),
+    searchInterest: v.optional(v.number()),
+    metadataJson: v.optional(v.string()),
+  })
+    .index("by_product", ["productId"])
+    .index("by_product_and_captured", ["productId", "capturedAt"])
+    .index("by_product_source_period", ["productId", "source", "periodKey"])
+    .index("by_listing_period", ["listingId", "periodKey"]),
+
+  radarSearchTerms: defineTable({
+    term: v.string(),
+    normalizedTerm: v.string(),
+    country: v.string(),
+    categoryId: v.optional(v.id("categories")),
+    isActive: v.boolean(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_normalized_country", ["normalizedTerm", "country"])
+    .index("by_active", ["isActive"])
+    .index("by_category", ["categoryId"]),
+
+  radarSearchTermSnapshots: defineTable({
+    searchTermId: v.id("radarSearchTerms"),
+    source: dataSourceValidator,
+    capturedAt: v.number(),
+    periodKey: v.string(),
+    interest: v.optional(v.number()),
+    relativeInterest: v.optional(v.number()),
+    growth7d: v.optional(v.number()),
+    growth30d: v.optional(v.number()),
+    breakout: v.optional(v.boolean()),
+    regionDataJson: v.optional(v.string()),
+    relatedQueriesJson: v.optional(v.string()),
+  })
+    .index("by_term", ["searchTermId"])
+    .index("by_term_source_period", ["searchTermId", "source", "periodKey"]),
+
+  radarProductFeatures: defineTable({
+    productId: v.id("radarProducts"),
+    calculatedAt: v.number(),
+    windowDays: v.number(),
+    demandGrowth: v.optional(v.number()),
+    demandVelocity: v.optional(v.number()),
+    demandAcceleration: v.optional(v.number()),
+    reviewsVelocity: v.optional(v.number()),
+    salesVelocity: v.optional(v.number()),
+    socialVelocity: v.optional(v.number()),
+    sellerGrowth: v.optional(v.number()),
+    listingGrowth: v.optional(v.number()),
+    competitionRatio: v.optional(v.number()),
+    priceChange: v.optional(v.number()),
+    crossSourceConfirmation: v.optional(v.number()),
+    seasonalityScore: v.optional(v.number()),
+    estimatedMargin: v.optional(v.number()),
+    logisticsScore: v.optional(v.number()),
+    riskScore: v.optional(v.number()),
+    featuresJson: v.optional(v.string()),
+  })
+    .index("by_product", ["productId"])
+    .index("by_product_and_calculated", ["productId", "calculatedAt"])
+    .index("by_product_window", ["productId", "windowDays"]),
+
+  radarProductScores: defineTable({
+    productId: v.id("radarProducts"),
+    calculatedAt: v.number(),
+    score: v.number(),
+    classification: classificationValidator,
+    confidence: v.number(),
+    explanationJson: explanationValidator,
+    scoringVersion: v.string(),
+  })
+    .index("by_product", ["productId"])
+    .index("by_product_and_calculated", ["productId", "calculatedAt"])
+    .index("by_score", ["score"])
+    .index("by_classification", ["classification"]),
+
+  radarProductBusinessData: defineTable({
+    productId: v.id("radarProducts"),
+    purchaseCost: v.optional(v.number()),
+    shippingCost: v.optional(v.number()),
+    taxCost: v.optional(v.number()),
+    platformFee: v.optional(v.number()),
+    packagingCost: v.optional(v.number()),
+    estimatedSalePrice: v.optional(v.number()),
+    weightKg: v.optional(v.number()),
+    widthCm: v.optional(v.number()),
+    heightCm: v.optional(v.number()),
+    depthCm: v.optional(v.number()),
+    regulatoryRisk: v.optional(v.number()),
+    fragility: v.optional(v.number()),
+    storageDifficulty: v.optional(v.number()),
+    isHazardous: v.optional(v.boolean()),
+    estimatedProfit: v.optional(v.number()),
+    estimatedMargin: v.optional(v.number()),
+    logisticsScore: v.optional(v.number()),
+    updatedAt: v.number(),
+    updatedBy: v.optional(v.id("users")),
+  }).index("by_product", ["productId"]),
+
+  radarSocialSignals: defineTable({
+    productId: v.id("radarProducts"),
+    source: dataSourceValidator,
+    capturedAt: v.number(),
+    periodKey: v.string(),
+    mentionCount: v.optional(v.number()),
+    viewCount: v.optional(v.number()),
+    creatorCount: v.optional(v.number()),
+    engagementCount: v.optional(v.number()),
+    purchaseIntentCount: v.optional(v.number()),
+    metadataJson: v.optional(v.string()),
+  })
+    .index("by_product", ["productId"])
+    .index("by_product_source_period", ["productId", "source", "periodKey"]),
+
+  radarJobs: defineTable({
+    type: jobTypeValidator,
+    status: jobStatusValidator,
+    startedAt: v.optional(v.number()),
+    finishedAt: v.optional(v.number()),
+    processedItems: v.number(),
+    successfulItems: v.number(),
+    failedItems: v.number(),
+    errorSummary: v.optional(v.string()),
+    metadataJson: v.optional(v.string()),
+    createdAt: v.number(),
+    createdBy: v.optional(v.id("users")),
+  })
+    .index("by_type", ["type"])
+    .index("by_status", ["status"])
+    .index("by_type_and_status", ["type", "status"])
+    .index("by_created", ["createdAt"]),
+
+  radarReviewQueue: defineTable({
+    status: reviewStatusValidator,
+    candidateProductId: v.optional(v.id("radarProducts")),
+    existingProductId: v.optional(v.id("radarProducts")),
+    listingId: v.optional(v.id("radarMarketplaceListings")),
+    proposedAlias: v.optional(v.string()),
+    matchConfidence: v.number(),
+    matchMethod: v.string(),
+    explanation: v.optional(v.string()),
+    resolvedAt: v.optional(v.number()),
+    resolvedBy: v.optional(v.id("users")),
+    resolutionNote: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_status", ["status"])
+    .index("by_created", ["createdAt"]),
+
+  /** Configurable seasonal dates — not hardcoded in scoring logic. */
+  radarSeasonalEvents: defineTable({
+    name: v.string(),
+    slug: v.string(),
+    country: v.string(),
+    /** Month 1–12; optional day-of-month for fixed dates. */
+    month: v.number(),
+    dayStart: v.optional(v.number()),
+    dayEnd: v.optional(v.number()),
+    /** Relative window in days around the event. */
+    windowDays: v.number(),
+    intensity: v.number(),
+    isActive: v.boolean(),
+  })
+    .index("by_slug_country", ["slug", "country"])
+    .index("by_country_active", ["country", "isActive"]),
+
+  radarScoringConfig: defineTable({
+    version: v.string(),
+    weightsJson: v.string(),
+    penaltyCapsJson: v.string(),
+    classificationRulesJson: v.string(),
+    isActive: v.boolean(),
+    createdAt: v.number(),
+  })
+    .index("by_version", ["version"])
+    .index("by_active", ["isActive"]),
+
+  /** Real wholesale / supplier catalog offers (imported, never invented). */
+  radarWholesaleOffers: defineTable({
+    sku: v.string(),
+    title: v.string(),
+    normalizedTitle: v.string(),
+    supplierName: v.optional(v.string()),
+    currency: v.string(),
+    unitPrice: v.number(),
+    moq: v.optional(v.number()),
+    leadTimeDays: v.optional(v.number()),
+    externalUrl: v.optional(v.string()),
+    productId: v.optional(v.id("radarProducts")),
+    normalizedAliases: v.array(v.string()),
+    metadataJson: v.optional(v.string()),
+    isActive: v.boolean(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_sku", ["sku"])
+    .index("by_normalized_title", ["normalizedTitle"])
+    .index("by_product", ["productId"])
+    .index("by_active", ["isActive"]),
+
+  // ─── Niche buckets (ad reuse across similar stores) ───────────────
+
+  radarNiches: defineTable({
+    country: v.string(),
+    nicheKey: v.string(),
+    keywords: v.array(v.string()),
+    /** Gemini-expanded Meta Ad Library search terms (optional). */
+    scrapeTerms: v.optional(v.array(v.string())),
+    label: v.string(),
+    adCount: v.number(),
+    lastScrapedAt: v.optional(v.number()),
     status: v.union(
-      v.literal("running"),
+      v.literal("ready"),
+      v.literal("pending_scrape"),
+      v.literal("scraping"),
+    ),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_key", ["country", "nicheKey"])
+    .index("by_status", ["status"])
+    .index("by_country_updated", ["country", "updatedAt"]),
+
+  /** Per-user Gemini ranking of niche ads (cached). */
+  radarAdRankings: defineTable({
+    userId: v.id("users"),
+    nicheId: v.id("radarNiches"),
+    profileFingerprint: v.string(),
+    ranked: v.array(
+      v.object({
+        adId: v.id("radarAds"),
+        score: v.number(),
+        reason: v.optional(v.string()),
+      }),
+    ),
+    droppedAdIds: v.array(v.id("radarAds")),
+    model: v.optional(v.string()),
+    createdAt: v.number(),
+    expiresAt: v.number(),
+  }).index("by_user_niche", ["userId", "nicheId"]),
+
+  radarNicheAds: defineTable({
+    nicheId: v.id("radarNiches"),
+    adId: v.id("radarAds"),
+    searchTerm: v.optional(v.string()),
+    linkedAt: v.number(),
+  })
+    .index("by_niche", ["nicheId"])
+    .index("by_ad", ["adId"])
+    .index("by_niche_ad", ["nicheId", "adId"]),
+
+  radarNicheScrapeJobs: defineTable({
+    nicheId: v.id("radarNiches"),
+    terms: v.array(v.string()),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("claimed"),
       v.literal("completed"),
       v.literal("failed"),
     ),
-    startedAt: v.number(),
+    createdAt: v.number(),
+    claimedAt: v.optional(v.number()),
     finishedAt: v.optional(v.number()),
     error: v.optional(v.string()),
-    productCount: v.optional(v.number()),
-    keywordCount: v.optional(v.number()),
-  })
-    .index("by_site", ["siteId"])
-    .index("by_site_and_started", ["siteId", "startedAt"])
-    .index("by_niche_site_started", ["nicheKey", "siteId", "startedAt"]),
+  }).index("by_status_created", ["status", "createdAt"]),
 
-  trendProducts: defineTable({
-    canonicalKey: v.string(),
-    title: v.string(),
-    image: v.optional(v.string()),
-    price: v.optional(v.number()),
-    currency: v.optional(v.string()),
-    mlId: v.string(),
-    mlType: v.union(
-      v.literal("ITEM"),
-      v.literal("PRODUCT"),
-      v.literal("USER_PRODUCT"),
-      v.literal("WEB"),
-    ),
-    permalink: v.optional(v.string()),
-    categoryId: v.id("categories"),
-    siteId: v.string(),
-    soldQuantity: v.optional(v.number()),
-    updatedAt: v.number(),
-  })
-    .index("by_canonical", ["canonicalKey"])
-    .index("by_category_and_site", ["categoryId", "siteId"])
-    .index("by_ml_id", ["mlId"]),
+  // ─── Meta Ad Library (Argentina MVP) ──────────────────────────────
 
-  trendKeywords: defineTable({
-    keyword: v.string(),
-    categoryId: v.id("categories"),
-    siteId: v.string(),
-    mlBucket: v.optional(
-      v.union(
-        v.literal("fastest_growing"),
-        v.literal("most_wanted"),
-        v.literal("rising"),
-      ),
-    ),
-    updatedAt: v.number(),
-  })
-    .index("by_keyword_category_site", ["keyword", "categoryId", "siteId"])
-    .index("by_category_and_site", ["categoryId", "siteId"]),
-
-  trendSnapshots: defineTable({
-    runId: v.id("trendRuns"),
-    entityType: v.union(v.literal("product"), v.literal("keyword")),
-    productId: v.optional(v.id("trendProducts")),
-    keywordId: v.optional(v.id("trendKeywords")),
-    categoryId: v.id("categories"),
-    siteId: v.string(),
-    /** Same fingerprint as trendRuns.nicheKey for niche-scoped research. */
-    nicheKey: v.optional(v.string()),
-    trendScore: v.number(),
-    mlPosition: v.optional(v.number()),
-    mlBucket: v.optional(
-      v.union(
-        v.literal("fastest_growing"),
-        v.literal("most_wanted"),
-        v.literal("rising"),
-      ),
-    ),
-    googleInterest: v.optional(v.number()),
-    webBuzz: v.optional(v.number()),
-    webMatchConfidence: v.optional(v.number()),
-    webSources: v.optional(v.array(v.string())),
-    soldQuantity: v.optional(v.number()),
-    explainedBy: v.optional(v.string()),
+  radarAdvertisers: defineTable({
+    pageId: v.string(),
+    pageName: v.string(),
+    country: v.string(),
+    activeAdCount: v.number(),
+    totalAdCount: v.number(),
+    lastSeenAt: v.number(),
     createdAt: v.number(),
   })
-    .index("by_run", ["runId"])
-    .index("by_category_and_site", ["categoryId", "siteId"])
-    .index("by_niche_category_site", ["nicheKey", "categoryId", "siteId"])
-    .index("by_category_score", ["categoryId", "trendScore"])
-    .index("by_product", ["productId"])
-    .index("by_keyword", ["keywordId"]),
+    .index("by_page", ["pageId"])
+    .index("by_country_lastSeen", ["country", "lastSeenAt"]),
+
+  radarStores: defineTable({
+    domain: v.string(),
+    platform: v.union(
+      v.literal("shopify"),
+      v.literal("tiendanube"),
+      v.literal("mercadolibre"),
+      v.literal("custom"),
+    ),
+    country: v.string(),
+    productCount: v.optional(v.number()),
+    themeHint: v.optional(v.string()),
+    firstSeenAt: v.number(),
+    lastSeenAt: v.number(),
+    metadataJson: v.optional(v.string()),
+  })
+    .index("by_domain", ["domain"])
+    .index("by_country_lastSeen", ["country", "lastSeenAt"]),
+
+  radarAds: defineTable({
+    externalAdId: v.string(),
+    pageId: v.string(),
+    pageName: v.string(),
+    country: v.string(),
+    platforms: v.array(v.string()),
+    body: v.optional(v.string()),
+    cta: v.optional(v.string()),
+    snapshotUrl: v.optional(v.string()),
+    mediaUrls: v.array(v.string()),
+    /** Meta Ad Library video creative (sd/hd); used for hover preview. */
+    videoUrl: v.optional(v.string()),
+    destinationUrl: v.optional(v.string()),
+    storeId: v.optional(v.id("radarStores")),
+    searchTerm: v.optional(v.string()),
+    startedAt: v.optional(v.number()),
+    lastSeenAt: v.number(),
+    isActive: v.boolean(),
+    metadataJson: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_external", ["externalAdId"])
+    .index("by_country_lastSeen", ["country", "lastSeenAt"])
+    .index("by_page", ["pageId"])
+    .index("by_destination", ["destinationUrl"])
+    .index("by_active_country", ["isActive", "country"]),
 });

@@ -1,0 +1,190 @@
+import { v } from "convex/values";
+
+/** Data source identifiers — extend without rewriting core. */
+export const dataSourceValidator = v.union(
+  v.literal("mercadolibre"),
+  v.literal("google_trends"),
+  /** @deprecated Historical agent pipeline tag — kept for existing snapshots. */
+  v.literal("trends_agent"),
+  /** @deprecated Historical agent pipeline tag. */
+  v.literal("discovery_agent"),
+  /** @deprecated Historical agent pipeline tag. */
+  v.literal("commerce_agent"),
+  /** @deprecated Historical agent pipeline tag. */
+  v.literal("sourcing_agent"),
+  v.literal("manual_social"),
+  v.literal("tiktok"),
+  v.literal("instagram"),
+  v.literal("youtube"),
+  v.literal("reddit"),
+  v.literal("amazon"),
+  v.literal("aliexpress"),
+  v.literal("google_ads"),
+  v.literal("wholesale"),
+  v.literal("gemini_research"),
+  v.literal("made_in_china"),
+  v.literal("alibaba"),
+  v.literal("meta_ad_library"),
+  v.literal("simulated"),
+);
+
+export const productStatusValidator = v.union(
+  v.literal("active"),
+  v.literal("tracked"),
+  v.literal("archived"),
+  v.literal("pending_review"),
+);
+
+export const classificationValidator = v.union(
+  v.literal("EMERGING"),
+  v.literal("CONFIRMED"),
+  v.literal("SATURATING"),
+  v.literal("SEASONAL"),
+  v.literal("FALSE_SIGNAL"),
+  v.literal("INSUFFICIENT_DATA"),
+);
+
+export const jobTypeValidator = v.union(
+  v.literal("DiscoverProducts"),
+  v.literal("EnrichFromMarketplaces"),
+  v.literal("EnrichFromWholesale"),
+  v.literal("CollectMarketplaceSnapshots"),
+  v.literal("CalculateFeatures"),
+  v.literal("CalculateScores"),
+  v.literal("MarkInactiveListings"),
+  v.literal("SeedDemo"),
+  v.literal("CollectMetaAds"),
+);
+
+export const jobStatusValidator = v.union(
+  v.literal("PENDING"),
+  v.literal("RUNNING"),
+  v.literal("COMPLETED"),
+  v.literal("COMPLETED_WITH_ERRORS"),
+  v.literal("FAILED"),
+);
+
+export const reviewStatusValidator = v.union(
+  v.literal("pending"),
+  v.literal("merged"),
+  v.literal("kept_separate"),
+  v.literal("dismissed"),
+);
+
+export const scoreFactorValidator = v.object({
+  name: v.string(),
+  value: v.number(),
+  contribution: v.optional(v.number()),
+  penalty: v.optional(v.number()),
+});
+
+export const explanationValidator = v.object({
+  positiveFactors: v.array(scoreFactorValidator),
+  negativeFactors: v.array(scoreFactorValidator),
+  dataQuality: v.object({
+    availableSources: v.number(),
+    expectedSources: v.number(),
+    historyDays: v.number(),
+    missingFields: v.optional(v.array(v.string())),
+  }),
+  whyRising: v.optional(v.array(v.string())),
+  confirmingSignals: v.optional(v.array(v.string())),
+  reducingFactors: v.optional(v.array(v.string())),
+  missingData: v.optional(v.array(v.string())),
+  confirmingRoles: v.optional(
+    v.array(
+      v.union(
+        v.literal("attention"),
+        v.literal("commerce"),
+        v.literal("sourcing"),
+      ),
+    ),
+  ),
+  confirmingSources: v.optional(v.array(v.string())),
+});
+
+export type DataSource =
+  | "mercadolibre"
+  | "google_trends"
+  | "trends_agent"
+  | "discovery_agent"
+  | "commerce_agent"
+  | "sourcing_agent"
+  | "manual_social"
+  | "tiktok"
+  | "instagram"
+  | "youtube"
+  | "reddit"
+  | "amazon"
+  | "aliexpress"
+  | "google_ads"
+  | "wholesale"
+  | "gemini_research"
+  | "made_in_china"
+  | "alibaba"
+  | "meta_ad_library"
+  | "simulated";
+
+export type Classification =
+  | "EMERGING"
+  | "CONFIRMED"
+  | "SATURATING"
+  | "SEASONAL"
+  | "FALSE_SIGNAL"
+  | "INSUFFICIENT_DATA";
+
+export type JobType =
+  | "DiscoverProducts"
+  | "EnrichFromMarketplaces"
+  | "EnrichFromWholesale"
+  | "CollectMarketplaceSnapshots"
+  | "CalculateFeatures"
+  | "CalculateScores"
+  | "MarkInactiveListings"
+  | "SeedDemo"
+  | "CollectMetaAds";
+
+export type JobStatus =
+  | "PENDING"
+  | "RUNNING"
+  | "COMPLETED"
+  | "COMPLETED_WITH_ERRORS"
+  | "FAILED";
+
+export type SignalRole = "attention" | "commerce" | "sourcing";
+
+export const businessGoalValidator = v.union(
+  v.literal("start_ecommerce"),
+  v.literal("create_store"),
+  v.literal("add_products"),
+  v.literal("grow_sales"),
+  v.literal("browse_ads"),
+);
+
+export type BusinessGoal =
+  | "start_ecommerce"
+  | "create_store"
+  | "add_products"
+  | "grow_sales"
+  | "browse_ads";
+
+export const SCORING_VERSION = "radar-v2";
+
+/** Default opportunity score weights (must sum to 1.0 for positive factors). */
+export const DEFAULT_SCORE_WEIGHTS = {
+  demandGrowth: 0.25,
+  acceleration: 0.15,
+  crossSource: 0.15,
+  demandSupplyGap: 0.15,
+  salesVelocity: 0.1,
+  margin: 0.1,
+  logistics: 0.1,
+} as const;
+
+export const DEFAULT_PENALTY_CAPS = {
+  saturation: 20,
+  seasonality: 15,
+  regulatoryRisk: 15,
+  lowConfidence: 15,
+  singleSource: 10,
+} as const;

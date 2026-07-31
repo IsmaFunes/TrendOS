@@ -5,10 +5,15 @@ import type { Id } from "./_generated/dataModel";
 import { getCurrentUserOrNull, requireIdentity } from "./lib/auth";
 import {
   clampNicheDescription,
+  clampShortNotes,
   hasNicheSignal,
+  MAX_LOGISTICS_CONSTRAINTS_LENGTH,
+  MAX_STORAGE_NOTES_LENGTH,
+  normalizeExcludedKeywords,
   normalizeNicheKeywords,
 } from "./lib/nicheProfile";
-import { internal } from "./_generated/api";
+import { businessGoalValidator } from "./radar/validators";
+import { resolveOrCreateNicheCore } from "./radar/niches";
 
 async function upsertUserFromIdentity(ctx: MutationCtx): Promise<Id<"users">> {
   const identity = await requireIdentity(ctx);
@@ -43,10 +48,17 @@ const businessProfileReturn = v.object({
   businessName: v.string(),
   description: v.optional(v.string()),
   nicheKeywords: v.optional(v.array(v.string())),
+  excludedKeywords: v.optional(v.array(v.string())),
   channels: v.optional(v.array(v.string())),
+  goal: v.optional(businessGoalValidator),
+  existingStoreUrl: v.optional(v.string()),
   monthlyRevenueRange: v.optional(v.string()),
   targetMarginPercent: v.optional(v.number()),
   notes: v.optional(v.string()),
+  hasWarehouseStorage: v.optional(v.boolean()),
+  storageNotes: v.optional(v.string()),
+  logisticsConstraints: v.optional(v.string()),
+  nicheId: v.optional(v.id("radarNiches")),
   updatedAt: v.number(),
 });
 
@@ -83,15 +95,17 @@ export const ensureUser = mutation({
 
 export const completeOnboarding = mutation({
   args: {
-    siteId: v.string(),
-    categoryIds: v.array(v.id("categories")),
-    businessName: v.string(),
-    description: v.optional(v.string()),
-    nicheKeywords: v.optional(v.array(v.string())),
+    goal: businessGoalValidator,
     channels: v.optional(v.array(v.string())),
-    monthlyRevenueRange: v.optional(v.string()),
-    targetMarginPercent: v.optional(v.number()),
-    notes: v.optional(v.string()),
+    existingStoreUrl: v.optional(v.string()),
+    nicheKeywords: v.optional(v.array(v.string())),
+    excludedKeywords: v.optional(v.array(v.string())),
+    description: v.optional(v.string()),
+    categoryIds: v.optional(v.array(v.id("categories"))),
+    businessName: v.optional(v.string()),
+    hasWarehouseStorage: v.optional(v.boolean()),
+    storageNotes: v.optional(v.string()),
+    logisticsConstraints: v.optional(v.string()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -101,26 +115,39 @@ export const completeOnboarding = mutation({
       throw new Error("User not found after signup");
     }
 
-    if (args.categoryIds.length === 0) {
-      throw new Error("Select at least one category");
-    }
-    if (!args.businessName.trim()) {
-      throw new Error("Business name is required");
-    }
-
     const nicheKeywords = normalizeNicheKeywords(args.nicheKeywords);
     const description = clampNicheDescription(args.description);
-    if (!hasNicheSignal({ keywords: nicheKeywords, description })) {
+    if (
+      args.goal !== "browse_ads" &&
+      !hasNicheSignal({ keywords: nicheKeywords, description })
+    ) {
       throw new Error(
-        "Agregá al menos 1 keyword o una descripción corta de lo que revendés",
+        "Contanos qué tipo de productos te interesan (al menos una palabra clave)",
       );
     }
 
+    const excludedKeywords = normalizeExcludedKeywords(args.excludedKeywords);
+    const storageNotes = clampShortNotes(
+      args.storageNotes,
+      MAX_STORAGE_NOTES_LENGTH,
+    );
+    const logisticsConstraints = clampShortNotes(
+      args.logisticsConstraints,
+      MAX_LOGISTICS_CONSTRAINTS_LENGTH,
+    );
+
+    const storeUrl = args.existingStoreUrl?.trim();
+    const businessName =
+      args.businessName?.trim() ||
+      user.name?.trim() ||
+      "Mi negocio";
+
     await ctx.db.patch(user._id, {
-      siteId: args.siteId,
+      siteId: "MLA",
       onboardingComplete: true,
     });
 
+    const categoryIds = args.categoryIds ?? [];
     const existingLinks = await ctx.db
       .query("userCategories")
       .withIndex("by_user", (q) => q.eq("userId", user._id))
@@ -128,7 +155,7 @@ export const completeOnboarding = mutation({
     for (const link of existingLinks) {
       await ctx.db.delete(link._id);
     }
-    for (const categoryId of args.categoryIds) {
+    for (const categoryId of categoryIds) {
       await ctx.db.insert("userCategories", {
         userId: user._id,
         categoryId,
@@ -140,15 +167,32 @@ export const completeOnboarding = mutation({
       .withIndex("by_user", (q) => q.eq("userId", user._id))
       .unique();
 
+    let nicheId = existingProfile?.nicheId;
+    if (nicheKeywords.length > 0 || description) {
+      const resolved = await resolveOrCreateNicheCore(ctx, {
+        keywords: nicheKeywords,
+        description,
+        country: "AR",
+      });
+      nicheId = resolved.nicheId;
+    }
+
     const profileData = {
       userId: user._id,
-      businessName: args.businessName.trim(),
+      businessName,
       description,
       nicheKeywords: nicheKeywords.length ? nicheKeywords : undefined,
+      excludedKeywords: excludedKeywords.length
+        ? excludedKeywords
+        : undefined,
       channels: args.channels,
-      monthlyRevenueRange: args.monthlyRevenueRange,
-      targetMarginPercent: args.targetMarginPercent,
-      notes: args.notes,
+      goal: args.goal,
+      existingStoreUrl: storeUrl || undefined,
+      hasWarehouseStorage: args.hasWarehouseStorage,
+      storageNotes:
+        args.hasWarehouseStorage === true ? storageNotes : undefined,
+      logisticsConstraints,
+      nicheId,
       updatedAt: Date.now(),
     };
 
@@ -157,10 +201,6 @@ export const completeOnboarding = mutation({
     } else {
       await ctx.db.insert("businessProfiles", profileData);
     }
-
-    await ctx.scheduler.runAfter(0, internal.ingestion.runNicheForUser, {
-      userId: user._id,
-    });
 
     return null;
   },
@@ -171,12 +211,16 @@ export const updateBusinessProfile = mutation({
     businessName: v.string(),
     description: v.optional(v.string()),
     nicheKeywords: v.optional(v.array(v.string())),
+    excludedKeywords: v.optional(v.array(v.string())),
     channels: v.optional(v.array(v.string())),
     monthlyRevenueRange: v.optional(v.string()),
     targetMarginPercent: v.optional(v.number()),
     categoryIds: v.optional(v.array(v.id("categories"))),
     siteId: v.optional(v.string()),
     scheduleResearch: v.optional(v.boolean()),
+    hasWarehouseStorage: v.optional(v.boolean()),
+    storageNotes: v.optional(v.string()),
+    logisticsConstraints: v.optional(v.string()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -197,6 +241,16 @@ export const updateBusinessProfile = mutation({
         "Agregá al menos 1 keyword o una descripción corta de lo que revendés",
       );
     }
+
+    const excludedKeywords = normalizeExcludedKeywords(args.excludedKeywords);
+    const storageNotes = clampShortNotes(
+      args.storageNotes,
+      MAX_STORAGE_NOTES_LENGTH,
+    );
+    const logisticsConstraints = clampShortNotes(
+      args.logisticsConstraints,
+      MAX_LOGISTICS_CONSTRAINTS_LENGTH,
+    );
 
     if (args.siteId) {
       await ctx.db.patch(user._id, { siteId: args.siteId });
@@ -226,14 +280,32 @@ export const updateBusinessProfile = mutation({
       .withIndex("by_user", (q) => q.eq("userId", user._id))
       .unique();
 
+    let nicheId = existingProfile?.nicheId;
+    if (nicheKeywords.length > 0 || description) {
+      const resolved = await resolveOrCreateNicheCore(ctx, {
+        keywords: nicheKeywords,
+        description,
+        country: "AR",
+      });
+      nicheId = resolved.nicheId;
+    }
+
     const profileData = {
       userId: user._id,
       businessName: args.businessName.trim(),
       description,
       nicheKeywords: nicheKeywords.length ? nicheKeywords : undefined,
+      excludedKeywords: excludedKeywords.length
+        ? excludedKeywords
+        : undefined,
       channels: args.channels,
       monthlyRevenueRange: args.monthlyRevenueRange,
       targetMarginPercent: args.targetMarginPercent,
+      hasWarehouseStorage: args.hasWarehouseStorage,
+      storageNotes:
+        args.hasWarehouseStorage === true ? storageNotes : undefined,
+      logisticsConstraints,
+      nicheId,
       updatedAt: Date.now(),
     };
 
@@ -243,11 +315,7 @@ export const updateBusinessProfile = mutation({
       await ctx.db.insert("businessProfiles", profileData);
     }
 
-    if (args.scheduleResearch !== false) {
-      await ctx.scheduler.runAfter(0, internal.ingestion.runNicheForUser, {
-        userId: user._id,
-      });
-    }
+    void args.scheduleResearch;
 
     return null;
   },

@@ -1,7 +1,10 @@
-import { normalizeProductName } from "../productMatch";
+import { normalizeAlias as normalizeProductName } from "../radar/normalize";
 
 export const MAX_NICHE_KEYWORDS = 3;
+export const MAX_EXCLUDED_KEYWORDS = 10;
 export const MAX_DESCRIPTION_LENGTH = 200;
+export const MAX_STORAGE_NOTES_LENGTH = 200;
+export const MAX_LOGISTICS_CONSTRAINTS_LENGTH = 200;
 /** Drop ML/web candidates below this niche relevance. */
 export const NICHE_RELEVANCE_MIN = 0.15;
 
@@ -38,6 +41,7 @@ const STOP = new Set([
 export type NicheInput = {
   keywords?: string[] | undefined;
   description?: string | undefined;
+  excludedKeywords?: string[] | undefined;
 };
 
 /** Light ES plural variants: mates↔mate, termos↔termo. */
@@ -73,9 +77,9 @@ function jaccard(a: Set<string>, b: Set<string>): number {
   return union === 0 ? 0 : inter / union;
 }
 
-/** Trim, dedupe, max 3, drop empties. */
-export function normalizeNicheKeywords(
+function normalizeKeywordList(
   keywords: string[] | undefined,
+  max: number,
 ): string[] {
   if (!keywords?.length) return [];
   const seen = new Set<string>();
@@ -87,9 +91,33 @@ export function normalizeNicheKeywords(
     if (!key || seen.has(key)) continue;
     seen.add(key);
     out.push(trimmed.slice(0, 48));
-    if (out.length >= MAX_NICHE_KEYWORDS) break;
+    if (out.length >= max) break;
   }
   return out;
+}
+
+/** Trim, dedupe, max 3, drop empties. */
+export function normalizeNicheKeywords(
+  keywords: string[] | undefined,
+): string[] {
+  return normalizeKeywordList(keywords, MAX_NICHE_KEYWORDS);
+}
+
+/** Trim, dedupe, max 10 — products/categories the business will not sell. */
+export function normalizeExcludedKeywords(
+  keywords: string[] | undefined,
+): string[] {
+  return normalizeKeywordList(keywords, MAX_EXCLUDED_KEYWORDS);
+}
+
+export function clampShortNotes(
+  text: string | undefined,
+  maxLen: number,
+): string | undefined {
+  if (text === undefined) return undefined;
+  const trimmed = text.trim().replace(/\s+/g, " ");
+  if (!trimmed) return undefined;
+  return trimmed.slice(0, maxLen);
 }
 
 export function clampNicheDescription(
@@ -150,6 +178,14 @@ export function nicheTokenSet(input: NicheInput): Set<string> {
   return set;
 }
 
+/** Jaccard similarity between two niche inputs (0–1). */
+export function nicheSimilarity(a: NicheInput, b: NicheInput): number {
+  return jaccard(nicheTokenSet(a), nicheTokenSet(b));
+}
+
+/** Minimum Jaccard to reuse an existing niche bucket. */
+export const NICHE_REUSE_SIMILARITY_MIN = 0.55;
+
 function keywordHitsTitle(keyword: string, titleNorm: string): boolean {
   const kwNorm = normalizeProductName(keyword);
   if (!kwNorm || kwNorm.length < 3) return false;
@@ -197,7 +233,25 @@ export function nicheRelevance(title: string, input: NicheInput): number {
   return Math.max(jac, coverage);
 }
 
+/**
+ * True when the title matches a business exclusion (do-not-sell list).
+ */
+export function isExcludedByBusiness(
+  title: string,
+  excludedKeywords: string[] | undefined,
+): boolean {
+  const exclusions = normalizeExcludedKeywords(excludedKeywords);
+  if (exclusions.length === 0) return false;
+  const titleNorm = normalizeProductName(title);
+  if (!titleNorm) return false;
+  for (const kw of exclusions) {
+    if (keywordHitsTitle(kw, titleNorm)) return true;
+  }
+  return false;
+}
+
 export function passesNicheFilter(title: string, input: NicheInput): boolean {
+  if (isExcludedByBusiness(title, input.excludedKeywords)) return false;
   if (!hasNicheSignal(input)) return true;
   return nicheRelevance(title, input) >= NICHE_RELEVANCE_MIN;
 }

@@ -1,15 +1,8 @@
 import { cronJobs } from "convex/server";
-import { internal } from "./_generated/api";
 
 const crons = cronJobs();
 
-// Default free-plan cadence: every 8 hours. PRO faster refresh is prepared via
-// users.refreshIntervalHours but MVP uses a single global cron.
-crons.interval(
-  "ingest active niches MLA",
-  { hours: 8 },
-  internal.ingestion.runActiveNiches,
-  { siteId: "MLA" },
-);
+// Meta Ad Library scrape is driven by the external worker + enqueue from onboarding.
+// No paid Gemini/SerpAPI crons in the MVP path.
 
 export default crons;
