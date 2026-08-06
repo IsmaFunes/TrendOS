@@ -115,14 +115,35 @@ export const completeOnboarding = mutation({
       throw new Error("User not found after signup");
     }
 
+    const categoryIds = args.categoryIds ?? [];
+    const categoryDocs =
+      categoryIds.length > 0
+        ? await Promise.all(categoryIds.map((id) => ctx.db.get(id)))
+        : [];
+    const categoryNames = categoryDocs
+      .filter((c): c is NonNullable<typeof c> => c !== null)
+      .map((c) => c.name);
+
     const nicheKeywords = normalizeNicheKeywords(args.nicheKeywords);
-    const description = clampNicheDescription(args.description);
+    const typedDescription = clampNicheDescription(args.description);
+    // Fold selected categories into the niche description so they actually
+    // reach scrape-term generation, not just sit as unused profile metadata —
+    // this also means picking categories alone is a valid way to define a
+    // niche, without having to type free-text keywords first.
+    const description =
+      categoryNames.length > 0
+        ? clampNicheDescription(
+            [`Categorías: ${categoryNames.join(", ")}`, typedDescription]
+              .filter((s): s is string => Boolean(s))
+              .join(". "),
+          )
+        : typedDescription;
     if (
       args.goal !== "browse_ads" &&
       !hasNicheSignal({ keywords: nicheKeywords, description })
     ) {
       throw new Error(
-        "Contanos qué tipo de productos te interesan (al menos una palabra clave)",
+        "Contanos qué tipo de productos te interesan (elegí una categoría o agregá una keyword)",
       );
     }
 
@@ -147,7 +168,6 @@ export const completeOnboarding = mutation({
       onboardingComplete: true,
     });
 
-    const categoryIds = args.categoryIds ?? [];
     const existingLinks = await ctx.db
       .query("userCategories")
       .withIndex("by_user", (q) => q.eq("userId", user._id))
