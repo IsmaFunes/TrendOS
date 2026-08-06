@@ -15,6 +15,23 @@ import {
 import { businessGoalValidator } from "./radar/validators";
 import { resolveOrCreateNicheCore } from "./radar/niches";
 
+/**
+ * Category names fold into a SEPARATE description used only for niche
+ * resolution (scrape-term generation) — never into the description field
+ * the user actually typed and sees again on reload.
+ */
+function foldCategoryNamesIntoDescription(
+  categoryNames: string[],
+  typedDescription: string | undefined,
+): string | undefined {
+  if (categoryNames.length === 0) return typedDescription;
+  return clampNicheDescription(
+    [`Categorías: ${categoryNames.join(", ")}`, typedDescription]
+      .filter((s): s is string => Boolean(s))
+      .join(". "),
+  );
+}
+
 async function upsertUserFromIdentity(ctx: MutationCtx): Promise<Id<"users">> {
   const identity = await requireIdentity(ctx);
   const existing = await getCurrentUserOrNull(ctx);
@@ -125,22 +142,20 @@ export const completeOnboarding = mutation({
       .map((c) => c.name);
 
     const nicheKeywords = normalizeNicheKeywords(args.nicheKeywords);
-    const typedDescription = clampNicheDescription(args.description);
-    // Fold selected categories into the niche description so they actually
-    // reach scrape-term generation, not just sit as unused profile metadata —
-    // this also means picking categories alone is a valid way to define a
-    // niche, without having to type free-text keywords first.
-    const description =
-      categoryNames.length > 0
-        ? clampNicheDescription(
-            [`Categorías: ${categoryNames.join(", ")}`, typedDescription]
-              .filter((s): s is string => Boolean(s))
-              .join(". "),
-          )
-        : typedDescription;
+    // Persisted as-is — the user's own text, never mixed with category names.
+    const description = clampNicheDescription(args.description);
+    // Fold selected categories into a SEPARATE description used only for
+    // niche resolution, so they actually reach scrape-term generation
+    // without polluting the description field the user sees/edits — and so
+    // picking categories alone is a valid way to define a niche, without
+    // typing free-text keywords first.
+    const nicheDescription = foldCategoryNamesIntoDescription(
+      categoryNames,
+      description,
+    );
     if (
       args.goal !== "browse_ads" &&
-      !hasNicheSignal({ keywords: nicheKeywords, description })
+      !hasNicheSignal({ keywords: nicheKeywords, description: nicheDescription })
     ) {
       throw new Error(
         "Contanos qué tipo de productos te interesan (elegí una categoría o agregá una keyword)",
@@ -188,10 +203,10 @@ export const completeOnboarding = mutation({
       .unique();
 
     let nicheId = existingProfile?.nicheId;
-    if (nicheKeywords.length > 0 || description) {
+    if (nicheKeywords.length > 0 || nicheDescription) {
       const resolved = await resolveOrCreateNicheCore(ctx, {
         keywords: nicheKeywords,
-        description,
+        description: nicheDescription,
         country: "AR",
       });
       nicheId = resolved.nicheId;
@@ -254,11 +269,41 @@ export const updateBusinessProfile = mutation({
       throw new Error("Business name is required");
     }
 
+    // categoryIds omitted = leave existing category links untouched, but
+    // still fold their names into the niche description below — otherwise a
+    // save that doesn't touch the category picker (e.g. just renaming the
+    // business) would silently drop niche signal that came only from
+    // categories set during onboarding.
+    let categoryNames: string[];
+    if (args.categoryIds) {
+      const categoryDocs = await Promise.all(
+        args.categoryIds.map((id) => ctx.db.get(id)),
+      );
+      categoryNames = categoryDocs
+        .filter((c): c is NonNullable<typeof c> => c !== null)
+        .map((c) => c.name);
+    } else {
+      const existingLinks = await ctx.db
+        .query("userCategories")
+        .withIndex("by_user", (q) => q.eq("userId", user._id))
+        .collect();
+      const existingCategoryDocs = await Promise.all(
+        existingLinks.map((l) => ctx.db.get(l.categoryId)),
+      );
+      categoryNames = existingCategoryDocs
+        .filter((c): c is NonNullable<typeof c> => c !== null)
+        .map((c) => c.name);
+    }
+
     const nicheKeywords = normalizeNicheKeywords(args.nicheKeywords);
     const description = clampNicheDescription(args.description);
-    if (!hasNicheSignal({ keywords: nicheKeywords, description })) {
+    const nicheDescription = foldCategoryNamesIntoDescription(
+      categoryNames,
+      description,
+    );
+    if (!hasNicheSignal({ keywords: nicheKeywords, description: nicheDescription })) {
       throw new Error(
-        "Agregá al menos 1 keyword o una descripción corta de lo que revendés",
+        "Agregá al menos 1 keyword, una categoría o una descripción corta de lo que revendés",
       );
     }
 
@@ -277,9 +322,6 @@ export const updateBusinessProfile = mutation({
     }
 
     if (args.categoryIds) {
-      if (args.categoryIds.length === 0) {
-        throw new Error("Select at least one category");
-      }
       const existingLinks = await ctx.db
         .query("userCategories")
         .withIndex("by_user", (q) => q.eq("userId", user._id))
@@ -301,10 +343,10 @@ export const updateBusinessProfile = mutation({
       .unique();
 
     let nicheId = existingProfile?.nicheId;
-    if (nicheKeywords.length > 0 || description) {
+    if (nicheKeywords.length > 0 || nicheDescription) {
       const resolved = await resolveOrCreateNicheCore(ctx, {
         keywords: nicheKeywords,
-        description,
+        description: nicheDescription,
         country: "AR",
       });
       nicheId = resolved.nicheId;
