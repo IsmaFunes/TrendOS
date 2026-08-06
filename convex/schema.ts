@@ -488,6 +488,18 @@ export default defineSchema({
     .index("by_destination", ["destinationUrl"])
     .index("by_active_country", ["isActive", "country"]),
 
+  // ─── OAuth token cache (Mercado Libre) ────────────────────────────
+  // Singleton row. Mercado Libre refresh tokens are single-use — each
+  // refresh call returns a NEW refresh token that must replace the old
+  // one, so the working token can't just live in a static env var past
+  // the very first call. See convex/radar/providers/mlAuth.ts.
+  radarMercadoLibreToken: defineTable({
+    accessToken: v.string(),
+    accessTokenExpiresAt: v.number(),
+    refreshToken: v.string(),
+    updatedAt: v.number(),
+  }),
+
   // ─── Investigate (on-demand per-ad research, cached) ────────────────
 
   /**

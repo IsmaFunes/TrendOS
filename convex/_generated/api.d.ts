@@ -29,6 +29,7 @@ import type * as radar_logistics from "../radar/logistics.js";
 import type * as radar_matching from "../radar/matching.js";
 import type * as radar_metaAds from "../radar/metaAds.js";
 import type * as radar_metrics from "../radar/metrics.js";
+import type * as radar_mlToken from "../radar/mlToken.js";
 import type * as radar_niches from "../radar/niches.js";
 import type * as radar_normalize from "../radar/normalize.js";
 import type * as radar_productEvidence from "../radar/productEvidence.js";
@@ -78,6 +79,7 @@ declare const fullApi: ApiFromModules<{
   "radar/matching": typeof radar_matching;
   "radar/metaAds": typeof radar_metaAds;
   "radar/metrics": typeof radar_metrics;
+  "radar/mlToken": typeof radar_mlToken;
   "radar/niches": typeof radar_niches;
   "radar/normalize": typeof radar_normalize;
   "radar/productEvidence": typeof radar_productEvidence;
