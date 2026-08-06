@@ -8,6 +8,7 @@ import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
 import { AppShell } from "@/components/AppShell";
 import { AdCreative } from "@/components/AdCreative";
+import { InvestigatePanel } from "@/components/InvestigatePanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -101,6 +102,8 @@ export default function AdDetailPage() {
           </div>
         </article>
       )}
+
+      {ad && <InvestigatePanel adId={ad._id} />}
     </AppShell>
   );
 }

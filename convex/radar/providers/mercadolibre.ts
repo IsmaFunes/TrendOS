@@ -29,6 +29,7 @@ type MlSearchResult = {
     original_price?: number | null;
     currency_id?: string;
     permalink?: string;
+    thumbnail?: string;
     available_quantity?: number;
     condition?: string;
     category_id?: string;
@@ -37,6 +38,12 @@ type MlSearchResult = {
   }>;
   paging?: { total?: number; offset?: number; limit?: number };
 };
+
+/** ML thumbnails are served over http at low res; upgrade both in place. */
+function upgradeMlThumbnail(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  return url.replace(/^http:/, "https:");
+}
 
 type MlItem = {
   id: string;
@@ -136,6 +143,7 @@ export function createMercadoLibreProvider(
           source: "mercadolibre",
           title: row.title,
           externalUrl: row.permalink,
+          imageUrl: upgradeMlThumbnail(row.thumbnail),
           price: row.price,
           originalPrice: row.original_price ?? undefined,
           currency: row.currency_id,

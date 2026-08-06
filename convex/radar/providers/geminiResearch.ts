@@ -572,3 +572,129 @@ export function parseGeminiResearchResponseForTests(
 ): GeminiResearchResult | null {
   return parseResearchJson(text, defaultSellCurrency);
 }
+
+// ─── Investigate: supplier lookup for one concrete product ────────────
+
+export type SupplierCandidate = {
+  supplierName?: string;
+  country: "AR" | "CN" | "BR";
+  unitPrice: number;
+  currency: string;
+  moq?: number;
+  leadTimeDays?: number;
+  url: string;
+};
+
+function asSupplierCountry(value: unknown): "AR" | "CN" | "BR" | null {
+  if (value === "AR" || value === "CN" || value === "BR") return value;
+  return null;
+}
+
+function parseSupplierJson(text: string): SupplierCandidate[] | null {
+  if (!text) return null;
+  const cleaned = text
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+  let data: unknown;
+  try {
+    data = JSON.parse(cleaned.slice(start, end + 1)) as unknown;
+  } catch {
+    return null;
+  }
+  if (typeof data !== "object" || data === null || !("suppliers" in data)) {
+    return null;
+  }
+  const raw = (data as { suppliers?: unknown }).suppliers;
+  if (!Array.isArray(raw)) return null;
+
+  const out: SupplierCandidate[] = [];
+  for (const item of raw) {
+    if (typeof item !== "object" || item === null) continue;
+    const row = item as Record<string, unknown>;
+    const country = asSupplierCountry(row.country ?? row.c);
+    const url =
+      typeof row.url === "string"
+        ? row.url
+        : typeof row.u === "string"
+          ? row.u
+          : null;
+    const unitPrice = asPositiveNumber(row.price ?? row.p);
+    // A supplier candidate without a source URL and a real price is not verifiable — drop it.
+    if (!country || !url || unitPrice == null) continue;
+    const currency = asCurrencyCode(
+      row.currency ?? row.cur,
+      country === "AR" ? "ARS" : country === "BR" ? "BRL" : "USD",
+    );
+    const moqRaw = row.moq ?? row.m;
+    const moq =
+      typeof moqRaw === "number" && Number.isFinite(moqRaw) && moqRaw > 0
+        ? moqRaw
+        : undefined;
+    const leadRaw = row.leadTimeDays ?? row.lead;
+    const leadTimeDays =
+      typeof leadRaw === "number" && Number.isFinite(leadRaw) && leadRaw > 0
+        ? leadRaw
+        : undefined;
+    const supplierName =
+      typeof row.supplier === "string"
+        ? row.supplier.slice(0, 80)
+        : typeof row.supplierName === "string"
+          ? row.supplierName.slice(0, 80)
+          : undefined;
+    out.push({
+      supplierName,
+      country,
+      unitPrice,
+      currency,
+      moq,
+      leadTimeDays,
+      url: url.slice(0, 500),
+    });
+  }
+  return out;
+}
+
+/**
+ * Find real, sourced supplier offers for one concrete product across
+ * Argentina (local/no import), China, and Brazil. Fail-closed without
+ * GEMINI_API_KEY — never invents a price or a supplier without a URL.
+ */
+export async function researchSuppliersForProduct(input: {
+  productName: string;
+  niche?: string;
+  maxPerCountry?: number;
+}): Promise<SupplierCandidate[]> {
+  const apiKey = requireGeminiApiKey();
+  const maxPerCountry = input.maxPerCountry ?? 2;
+  const niche = input.niche?.trim();
+
+  const prompt = `Sos sourcing agent para un ecommerce en Argentina.
+Producto a abastecer: "${input.productName}"${niche ? ` (nicho del seller: ${niche})` : ""}.
+
+Usá Google Search para encontrar ofertas de compra REALES y verificables (mayoristas,
+importadoras, fabricantes o marketplaces B2B) para ese producto en estos 3 países:
+- AR (Argentina): mayorista/distribuidor local — el seller NO tendría que importar.
+- CN (China): Alibaba / Made-in-China / fabricante directo — requiere importar.
+- BR (Brasil): mayorista/distribuidor — requiere importar a Argentina.
+
+Hasta ${maxPerCountry} ofertas por país (menos si no encontrás suficientes reales).
+Cada oferta DEBE tener una URL real de la ficha/publicación y un precio unitario numérico.
+NO inventes proveedores, precios ni URLs. Si no encontrás nada confiable para un país, omitilo.
+
+Respondé SOLO JSON válido (sin markdown):
+{"suppliers":[{"country":"AR","supplier":"Nombre","price":1200,"currency":"ARS","moq":10,"leadTimeDays":5,"url":"https://..."}]}
+Campos obligatorios: country (AR|CN|BR), price, url. moq/leadTimeDays/currency opcionales.`;
+
+  const { text, finishReason } = await callGeminiWithSearch(apiKey, prompt);
+  const parsed = parseSupplierJson(text);
+  if (!parsed) {
+    throw new Error(
+      `Gemini supplier research unparseable${finishReason ? ` (${finishReason})` : ""}`,
+    );
+  }
+  return parsed;
+}
