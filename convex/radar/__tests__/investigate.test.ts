@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildHeuristicProductSignal,
   capSuppliersByCountry,
@@ -8,6 +8,7 @@ import {
   rankMlMatches,
   rankSimilarAds,
   scoreStoreQuality,
+  verifyUrlContent,
   type SimilarAdCandidate,
   type SupplierOffer,
 } from "../investigate";
@@ -348,5 +349,57 @@ describe("isRelevantSupplierTitle", () => {
     expect(
       isRelevantSupplierTitle("stainless steel thermos 1l", "Wireless Bluetooth Earbuds Case"),
     ).toBe(false);
+  });
+});
+
+describe("verifyUrlContent", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function mockFetch(response: { ok: boolean; text: string }) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: response.ok,
+        text: () => Promise.resolve(response.text),
+      }),
+    );
+  }
+
+  it("rejects a claimed listing whose real page is unrelated content (the Santa Claus case)", async () => {
+    mockFetch({
+      ok: true,
+      text: "<html><title>Papá Noel decorativo con luces</title>Figura navideña de 40cm...</html>",
+    });
+    const ok = await verifyUrlContent(
+      "https://www.mercadolibre.com.ar/some-item/p/MLA123",
+      "Kit entrenamiento gimnasio en casa fitness",
+    );
+    expect(ok).toBe(false);
+  });
+
+  it("accepts a page whose content actually matches the claimed title", async () => {
+    mockFetch({
+      ok: true,
+      text: "<html><title>Colchoneta para entrenar en casa - Yoga Mat</title>Colchoneta antideslizante para entrenar en casa...</html>",
+    });
+    const ok = await verifyUrlContent(
+      "https://articulo.mercadolibre.com.ar/some-item",
+      "Colchoneta para entrenar en casa",
+    );
+    expect(ok).toBe(true);
+  });
+
+  it("rejects a non-200 response", async () => {
+    mockFetch({ ok: false, text: "" });
+    const ok = await verifyUrlContent("https://articulo.mercadolibre.com.ar/gone", "Termo acero");
+    expect(ok).toBe(false);
+  });
+
+  it("rejects a dead/delisted page even if it happens to return 200", async () => {
+    mockFetch({ ok: true, text: "<html>Publicación pausada por el vendedor</html>" });
+    const ok = await verifyUrlContent("https://articulo.mercadolibre.com.ar/paused", "Termo acero");
+    expect(ok).toBe(false);
   });
 });

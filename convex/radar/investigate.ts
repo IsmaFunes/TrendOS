@@ -33,6 +33,7 @@ import {
 import {
   researchMercadoLibreListings,
   researchSuppliersForProduct,
+  type MercadoLibreListingCandidate,
   type SupplierCandidate,
 } from "./providers/geminiResearch";
 import type { ExternalProduct } from "./contracts";
@@ -616,6 +617,65 @@ Respondé SOLO JSON: {"keep":["id1","id2"]}`;
   }
 }
 
+const VERIFY_TIMEOUT_MS = 8_000;
+/** Fraction of the claimed title's meaningful tokens that must actually appear on the page. */
+const VERIFY_MIN_TOKEN_OVERLAP = 0.4;
+const VERIFY_USER_AGENT =
+  "Mozilla/5.0 (compatible; TrendOSVerify/1.0; +https://github.com/local)";
+const DEAD_PAGE_MARKERS = [
+  "página no encontrada",
+  "publicación pausada",
+  "ya no está disponible",
+  "page not found",
+];
+
+/**
+ * Gemini's "don't invent a URL" instruction is a request, not a guarantee —
+ * grounded search can still misattribute a real-looking URL to the wrong
+ * content (confirmed: a fitness-mat search once returned a genuine
+ * mercadolibre.com.ar URL whose actual page was an unrelated decorative
+ * Santa Claus figure). This is the only real check: fetch the page and
+ * confirm the claimed title's words are actually there.
+ */
+export async function verifyUrlContent(
+  url: string,
+  claimedTitle: string,
+): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), VERIFY_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        signal: controller.signal,
+        headers: { "User-Agent": VERIFY_USER_AGENT },
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!res.ok) return false;
+    const html = (await res.text()).toLowerCase();
+    if (DEAD_PAGE_MARKERS.some((marker) => html.includes(marker))) {
+      return false;
+    }
+    const tokens = tokenizeProductName(claimedTitle);
+    if (tokens.length === 0) return true;
+    const hits = tokens.filter((t) => html.includes(t)).length;
+    return hits / tokens.length >= VERIFY_MIN_TOKEN_OVERLAP;
+  } catch {
+    return false;
+  }
+}
+
+async function verifyAll<T extends { url: string; title: string }>(
+  candidates: T[],
+): Promise<T[]> {
+  const flags = await Promise.all(
+    candidates.map((c) => verifyUrlContent(c.url, c.title).catch(() => false)),
+  );
+  return candidates.filter((_c, i) => flags[i]);
+}
+
 function isDisplayableCandidate(ad: {
   pageName: string;
   body?: string;
@@ -944,7 +1004,11 @@ export const investigateAd = action({
     if (mlItems.length === 0 && geminiEnabled) {
       try {
         const listings = await researchMercadoLibreListings({ productName });
-        mlItems = listings.map((l) => ({
+        // Grounded search can still misattribute a real URL to the wrong
+        // content — fetch each candidate and confirm the claimed title is
+        // actually on the page before trusting it.
+        const verified: MercadoLibreListingCandidate[] = await verifyAll(listings);
+        mlItems = verified.map((l) => ({
           externalId: l.url,
           source: "gemini_research" as const,
           title: l.title,
@@ -955,7 +1019,11 @@ export const investigateAd = action({
           sellerName: l.sellerName,
           condition: l.condition,
         }));
-        if (mlItems.length === 0) {
+        if (listings.length > 0 && verified.length === 0) {
+          warnings.push(
+            "MercadoLibre: encontramos resultados por búsqueda web pero no pudimos confirmar que sean el producto real — descartados.",
+          );
+        } else if (mlItems.length === 0) {
           warnings.push(
             "MercadoLibre: no encontramos publicaciones ni por API ni por búsqueda web.",
           );
@@ -1033,11 +1101,15 @@ export const investigateAd = action({
       );
     }
     if (geminiSuppliers.status === "fulfilled") {
-      for (const s of geminiSuppliers.value) {
-        // Gemini is already instructed to match the exact product, but
-        // this is a second, independent check against the same bar the
-        // other sources have to clear.
-        if (!isRelevantSupplierTitle(productName, s.title)) continue;
+      // Gemini is already instructed to match the exact product — cheap
+      // title-vs-query check first, then confirm the survivors' pages
+      // actually contain the claimed offer (same hallucination risk as
+      // the MercadoLibre web-search fallback).
+      const relevant = geminiSuppliers.value.filter((s) =>
+        isRelevantSupplierTitle(productName, s.title),
+      );
+      const verifiedSuppliers: SupplierCandidate[] = await verifyAll(relevant);
+      for (const s of verifiedSuppliers) {
         suppliersRaw.push({
           title: s.title,
           supplierName: s.supplierName,
@@ -1050,6 +1122,11 @@ export const investigateAd = action({
           url: s.url,
           source: "gemini_research",
         });
+      }
+      if (relevant.length > 0 && verifiedSuppliers.length === 0) {
+        warnings.push(
+          "Gemini: encontramos proveedores por búsqueda pero no pudimos confirmar sus publicaciones — descartados.",
+        );
       }
     } else if (geminiEnabled) {
       warnings.push("Gemini: no se pudieron buscar proveedores");
