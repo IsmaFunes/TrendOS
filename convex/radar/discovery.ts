@@ -579,7 +579,7 @@ export const runEnrichFromMarketplaces = internalAction({
         if (!mlSrc.configured) {
           errors.push(`mercadolibre disabled: ${mlSrc.missingEnv.join(", ")}`);
         } else {
-          const token = await resolveMercadoLibreAccessToken();
+          const token = await resolveMercadoLibreAccessToken(ctx);
           mlProvider = createMercadoLibreProvider({
             accessToken: token,
             jobId: args.jobId,

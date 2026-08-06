@@ -860,7 +860,7 @@ export const runDiscoverProducts = internalAction({
       if (terms.length === 0) {
         throw new Error("No active search terms configured");
       }
-      const token = await resolveMercadoLibreAccessToken();
+      const token = await resolveMercadoLibreAccessToken(ctx);
       const provider = createMercadoLibreProvider({
         accessToken: token,
         maxRequestsPerMinute: Number(
@@ -966,7 +966,7 @@ export const runCollectMarketplaceSnapshots = internalAction({
           externalUrl?: string;
         }>;
       }> = await ctx.runQuery(internal.radar.jobs.listTrackedProducts, {});
-      const token = await resolveMercadoLibreAccessToken();
+      const token = await resolveMercadoLibreAccessToken(ctx);
       const provider = createMercadoLibreProvider({
         accessToken: token,
         jobId: args.jobId,

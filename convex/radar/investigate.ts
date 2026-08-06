@@ -810,7 +810,7 @@ export const investigateAd = action({
     try {
       let accessToken: string | undefined;
       try {
-        accessToken = await resolveMercadoLibreAccessToken();
+        accessToken = await resolveMercadoLibreAccessToken(ctx);
       } catch {
         accessToken = undefined;
       }
