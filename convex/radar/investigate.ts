@@ -55,6 +55,10 @@ const CANDIDATE_AD_POOL = 250;
 const SIMILAR_AD_SHORTLIST = 6;
 /** Documented estimate (MercadoLibre "clásica" listing fee), not a live rate. */
 const ESTIMATED_ML_PLATFORM_FEE_RATE = 0.13;
+/** Documented estimate (typical Mercado Envíos seller-side cost for a light package), not a live rate. */
+const ESTIMATED_SHIPPING_COST_RATE = 0.08;
+/** Documented estimate (typical paid-social TACOS for an ecommerce store), not derived from any real campaign. */
+const ESTIMATED_AD_SPEND_RATE = 0.15;
 const GEMINI_FLASH_MODEL = "gemini-3.6-flash";
 
 // ───────────────────────── pure helpers ─────────────────────────────
@@ -384,9 +388,13 @@ export type ProfitEstimate = {
   bestSupplierCountry?: SupplierCountry;
   estimatedSalePrice?: number;
   estimatedSaleCurrency?: string;
+  estimatedShippingCost?: number;
+  estimatedAdSpend?: number;
   estimatedProfit?: number;
   estimatedMargin?: number;
   platformFeeRate?: number;
+  shippingCostRate?: number;
+  adSpendRate?: number;
   fxRateUsed?: number;
   fxRateSource?: string;
   isEstimated: boolean;
@@ -460,9 +468,14 @@ export function computeProfitEstimate(input: {
     };
   }
 
+  const estimatedShippingCost =
+    input.estimatedSalePrice * ESTIMATED_SHIPPING_COST_RATE;
+  const estimatedAdSpend = input.estimatedSalePrice * ESTIMATED_AD_SPEND_RATE;
   const margin = calculateMargin({
     purchaseCost: best.arsCost,
+    shippingCost: estimatedShippingCost,
     platformFee: input.estimatedSalePrice * ESTIMATED_ML_PLATFORM_FEE_RATE,
+    adSpend: estimatedAdSpend,
     estimatedSalePrice: input.estimatedSalePrice,
   });
 
@@ -472,16 +485,20 @@ export function computeProfitEstimate(input: {
     bestSupplierCountry: best.supplier.country,
     estimatedSalePrice: input.estimatedSalePrice,
     estimatedSaleCurrency: "ARS",
+    estimatedShippingCost,
+    estimatedAdSpend,
     estimatedProfit: margin.estimatedProfit ?? undefined,
     estimatedMargin: margin.estimatedMargin ?? undefined,
     platformFeeRate: ESTIMATED_ML_PLATFORM_FEE_RATE,
+    shippingCostRate: ESTIMATED_SHIPPING_COST_RATE,
+    adSpendRate: ESTIMATED_AD_SPEND_RATE,
     fxRateUsed: best.fx?.rate,
     fxRateSource: best.fx?.source,
     isEstimated: true,
     note:
       best.supplier.country === "AR"
-        ? "Estimado: no incluye flete local ni impuestos."
-        : "Estimado con el tipo de cambio indicado; no incluye flete de importación ni impuestos.",
+        ? "Estimado: envío, comisión y ads son estimaciones genéricas, no de tu cuenta real. No incluye impuestos."
+        : "Estimado con el tipo de cambio indicado; envío, comisión y ads son estimaciones genéricas, no de tu cuenta real. No incluye impuestos de importación.",
   };
 }
 

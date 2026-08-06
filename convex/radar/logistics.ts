@@ -10,6 +10,8 @@ export type BusinessCosts = {
   taxCost?: number | null;
   platformFee?: number | null;
   packagingCost?: number | null;
+  /** Estimated customer-acquisition ad spend allocated per unit. */
+  adSpend?: number | null;
   estimatedSalePrice?: number | null;
 };
 
@@ -40,8 +42,9 @@ export function calculateMargin(costs: BusinessCosts): MarginResult {
   const tax = costs.taxCost ?? 0;
   const fee = costs.platformFee ?? 0;
   const packaging = costs.packagingCost ?? 0;
+  const adSpend = costs.adSpend ?? 0;
   const estimatedProfit =
-    sale - purchase - shipping - tax - fee - packaging;
+    sale - purchase - shipping - tax - fee - packaging - adSpend;
   const estimatedMargin = estimatedProfit / sale;
   return { estimatedProfit, estimatedMargin, isEstimated: true };
 }

@@ -281,7 +281,12 @@ describe("computeProfitEstimate", () => {
       fxUsdArs: { rate: 1000, source: "blue (dolarapi.com)" },
     });
     expect(profit?.estimatedMargin).not.toBeUndefined();
-    expect(profit?.estimatedProfit).toBeCloseTo(15_000 - 5_000 - 15_000 * 0.13, 0);
+    expect(profit?.estimatedShippingCost).toBeCloseTo(15_000 * 0.08, 0);
+    expect(profit?.estimatedAdSpend).toBeCloseTo(15_000 * 0.15, 0);
+    expect(profit?.estimatedProfit).toBeCloseTo(
+      15_000 - 5_000 - 15_000 * 0.13 - 15_000 * 0.08 - 15_000 * 0.15,
+      0,
+    );
     expect(profit?.fxRateUsed).toBe(1000);
     expect(profit?.fxRateSource).toBe("blue (dolarapi.com)");
   });

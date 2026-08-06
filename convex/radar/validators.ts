@@ -276,9 +276,13 @@ export const profitEstimateValidator = v.object({
   bestSupplierCountry: v.optional(supplierCountryValidator),
   estimatedSalePrice: v.optional(v.number()),
   estimatedSaleCurrency: v.optional(v.string()),
+  estimatedShippingCost: v.optional(v.number()),
+  estimatedAdSpend: v.optional(v.number()),
   estimatedProfit: v.optional(v.number()),
   estimatedMargin: v.optional(v.number()),
   platformFeeRate: v.optional(v.number()),
+  shippingCostRate: v.optional(v.number()),
+  adSpendRate: v.optional(v.number()),
   /** FX rate actually used to convert the supplier's cost into ARS, if any. */
   fxRateUsed: v.optional(v.number()),
   /** Where fxRateUsed came from, e.g. "blue (dolarapi.com)". */
