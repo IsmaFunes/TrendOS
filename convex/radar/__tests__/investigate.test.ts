@@ -5,6 +5,7 @@ import {
   computeInvestigationScore,
   computeProfitEstimate,
   isRelevantSupplierTitle,
+  parseExtractedProductSignal,
   rankMlMatches,
   rankSimilarAds,
   scoreStoreQuality,
@@ -401,5 +402,55 @@ describe("verifyUrlContent", () => {
     mockFetch({ ok: true, text: "<html>Publicación pausada por el vendedor</html>" });
     const ok = await verifyUrlContent("https://articulo.mercadolibre.com.ar/paused", "Termo acero");
     expect(ok).toBe(false);
+  });
+});
+
+describe("parseExtractedProductSignal", () => {
+  it("extracts productName/searchQuery/attributes for a physical product", () => {
+    const signal = parseExtractedProductSignal(
+      JSON.stringify({
+        isPhysicalProduct: true,
+        productName: "Colchoneta antideslizante para entrenar",
+        category: "fitness",
+        attributes: ["antideslizante", "TPE", "1cm"],
+        searchQuery: "colchoneta antideslizante entrenar",
+        englishQuery: "non-slip exercise mat",
+      }),
+    );
+    expect(signal?.isPhysicalProduct).toBe(true);
+    expect(signal?.productName).toContain("Colchoneta");
+    expect(signal?.attributes).toEqual(["antideslizante", "TPE", "1cm"]);
+    expect(signal?.searchQuery.length).toBeGreaterThan(0);
+  });
+
+  it("flags a training-program ad as not a physical product instead of forcing a match", () => {
+    const signal = parseExtractedProductSignal(
+      JSON.stringify({
+        isPhysicalProduct: false,
+        notAProductReason: "programa de entrenamiento online",
+      }),
+    );
+    expect(signal?.isPhysicalProduct).toBe(false);
+    expect(signal?.notAProductReason).toBe("programa de entrenamiento online");
+    expect(signal?.searchQuery).toBe("");
+  });
+
+  it("defaults to a generic reason when the model omits it", () => {
+    const signal = parseExtractedProductSignal(
+      JSON.stringify({ isPhysicalProduct: false }),
+    );
+    expect(signal?.notAProductReason).toBeTruthy();
+  });
+
+  it("returns null on unparseable JSON", () => {
+    expect(parseExtractedProductSignal("not json")).toBeNull();
+  });
+
+  it("returns null when a physical product is missing productName or searchQuery", () => {
+    expect(
+      parseExtractedProductSignal(
+        JSON.stringify({ isPhysicalProduct: true, productName: "", searchQuery: "" }),
+      ),
+    ).toBeNull();
   });
 });

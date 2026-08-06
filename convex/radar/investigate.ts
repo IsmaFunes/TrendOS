@@ -550,22 +550,79 @@ async function callGeminiJsonLocal(prompt: string): Promise<string> {
   return text;
 }
 
-async function refineProductSignalWithGemini(
-  pageName: string,
-  body: string,
-): Promise<{ productName: string; searchQuery: string; englishQuery: string } | null> {
-  const prompt = `Extraé el nombre de producto físico concreto que se anuncia en este anuncio de Meta (Facebook/Instagram) de Argentina. Ignorá ganchos de oferta (envío gratis, cuotas, 2x1) y el nombre de la tienda.
+export type ExtractedProductSignal = {
+  isPhysicalProduct: boolean;
+  /** Why it isn't, when isPhysicalProduct is false — for the user-facing message. */
+  notAProductReason?: string;
+  productName: string;
+  category?: string;
+  /** Distinctive descriptors (material, type, use case, size...) used to build tighter search queries. */
+  attributes: string[];
+  searchQuery: string;
+  englishQuery: string;
+};
+
+/**
+ * "We have the ad — now, what's the product?" This is the actual matching
+ * gap: extracting a good enough signal to search *for*. A short noun-phrase
+ * pulled from ad copy isn't enough — it also has to first tell physical
+ * products (importable/resellable) apart from apps, courses, coaching
+ * programs, and other services, which superficially share fitness/product
+ * vocabulary but have nothing to match on MercadoLibre or with a supplier.
+ */
+function buildExtractProductSignalPrompt(pageName: string, body: string): string {
+  return `Analizá este anuncio de Meta (Facebook/Instagram) de Argentina.
 
 Página: ${pageName}
 Texto del anuncio: ${body.slice(0, 500)}
 
-Respondé SOLO JSON: {"productName":"Nombre corto y concreto en español","searchQuery":"3 a 6 palabras en español para buscar en un marketplace","englishQuery":"la misma búsqueda pero en inglés, para mayoristas B2B como Alibaba"}`;
-  const text = await callGeminiJsonLocal(prompt);
-  const parsed = JSON.parse(text) as {
+Paso 1: ¿Promociona un PRODUCTO FÍSICO concreto — un objeto tangible que se pueda importar y revender? ¿O es otra cosa: app, curso online, programa de entrenamiento/coaching, servicio, suscripción, evento, inmueble, franquicia, contenido digital?
+
+Si NO es un producto físico: isPhysicalProduct=false y explicá brevemente qué es en su lugar (ej. "programa de entrenamiento online", "app móvil").
+
+Si SÍ es un producto físico:
+- productName: nombre concreto (con material/tipo/variante), no la categoría genérica ni el nombre de la tienda.
+- category: rubro corto (ej. "fitness", "cocina", "mates").
+- attributes: 2-4 palabras distintivas reales del producto (material, tamaño, uso, color) mencionadas o claramente implícitas — NO ganchos de oferta.
+- searchQuery: 3-6 palabras en español para buscarlo en un marketplace, construidas con el productName + attributes.
+- englishQuery: la misma búsqueda en inglés, para mayoristas B2B como Alibaba.
+
+Respondé SOLO JSON:
+{"isPhysicalProduct":true,"notAProductReason":"","productName":"...","category":"...","attributes":["...","..."],"searchQuery":"...","englishQuery":"..."}`;
+}
+
+/** Pure JSON parsing, exported for unit tests — no network calls. */
+export function parseExtractedProductSignal(text: string): ExtractedProductSignal | null {
+  let parsed: {
+    isPhysicalProduct?: unknown;
+    notAProductReason?: unknown;
     productName?: unknown;
+    category?: unknown;
+    attributes?: unknown;
     searchQuery?: unknown;
     englishQuery?: unknown;
   };
+  try {
+    parsed = JSON.parse(text) as typeof parsed;
+  } catch {
+    return null;
+  }
+
+  if (parsed.isPhysicalProduct === false) {
+    const notAProductReason =
+      typeof parsed.notAProductReason === "string" && parsed.notAProductReason.trim()
+        ? parsed.notAProductReason.trim().slice(0, 160)
+        : "no parece ser un producto físico";
+    return {
+      isPhysicalProduct: false,
+      notAProductReason,
+      productName: "",
+      attributes: [],
+      searchQuery: "",
+      englishQuery: "",
+    };
+  }
+
   const productName =
     typeof parsed.productName === "string"
       ? parsed.productName.trim().slice(0, 120)
@@ -578,8 +635,31 @@ Respondé SOLO JSON: {"productName":"Nombre corto y concreto en español","searc
     typeof parsed.englishQuery === "string"
       ? parsed.englishQuery.trim().slice(0, 80)
       : "";
+  const category =
+    typeof parsed.category === "string" ? parsed.category.trim().slice(0, 60) : undefined;
+  const attributes = Array.isArray(parsed.attributes)
+    ? parsed.attributes
+        .filter((a): a is string => typeof a === "string" && a.trim().length > 0)
+        .map((a) => a.trim().slice(0, 40))
+        .slice(0, 4)
+    : [];
   if (!productName || !searchQuery) return null;
-  return { productName, searchQuery, englishQuery: englishQuery || searchQuery };
+  return {
+    isPhysicalProduct: true,
+    productName,
+    category,
+    attributes,
+    searchQuery,
+    englishQuery: englishQuery || searchQuery,
+  };
+}
+
+async function extractProductSignalWithGemini(
+  pageName: string,
+  body: string,
+): Promise<ExtractedProductSignal | null> {
+  const text = await callGeminiJsonLocal(buildExtractProductSignalPrompt(pageName, body));
+  return parseExtractedProductSignal(text);
 }
 
 /**
@@ -600,7 +680,7 @@ ${JSON.stringify(
   candidates.map((c) => ({ id: c.adId, pagina: c.pageName, texto: c.bodySnippet })),
 )}
 
-Para cada candidato, decidí si es genuinamente EL MISMO producto (no solo la misma categoría o rubro — ej. "termo acero 1L" y "termo acero 750ml" NO son el mismo producto). Ante la duda, DESCARTALO.
+Para cada candidato, decidí si es genuinamente EL MISMO producto físico (no solo la misma categoría o rubro — ej. "termo acero 1L" y "termo acero 750ml" NO son el mismo producto). DESCARTÁ también cualquier candidato que sea una app, curso online, programa de entrenamiento/coaching, servicio o suscripción en vez de un producto físico. Ante la duda, DESCARTALO.
 
 Respondé SOLO JSON: {"keep":["id1","id2"]}`;
   try {
@@ -949,14 +1029,39 @@ export const investigateAd = action({
 
     if (geminiEnabled) {
       try {
-        const refined = await refineProductSignalWithGemini(
+        const extracted = await extractProductSignalWithGemini(
           adBasic.pageName,
           adBasic.body ?? "",
         );
-        if (refined) {
-          productName = refined.productName;
-          searchQuery = refined.searchQuery;
-          englishQuery = refined.englishQuery;
+        if (extracted && !extracted.isPhysicalProduct) {
+          // "We have the ad — what's the product?" Sometimes there isn't
+          // one: an app, a coaching program, a course. Forcing a search
+          // anyway is exactly how you get a fitness "product" investigation
+          // turning up training-program ads and nonsense ML/supplier
+          // matches — better to say so and stop here.
+          const investigationId: Id<"radarAdInvestigations"> =
+            await ctx.runMutation(internal.radar.investigate.saveInvestigation, {
+              adId: args.adId,
+              userId: me._id,
+              productQuery: adBasic.pageName,
+              status: "ready",
+              score: 0,
+              classification: "weak",
+              scoreBreakdown: { adSignal: 0, mlSignal: 0, sourcingSignal: 0, nicheFit: 0 },
+              similarAds: [],
+              mlMatches: [],
+              suppliers: [],
+              profit: undefined,
+              warnings: [
+                `Este anuncio no parece promocionar un producto físico (${extracted.notAProductReason ?? "parece un servicio o app"}) — Investigar busca productos importables/revendibles.`,
+              ],
+            });
+          return { status: "ready", investigationId };
+        }
+        if (extracted?.isPhysicalProduct) {
+          productName = extracted.productName;
+          searchQuery = extracted.searchQuery;
+          englishQuery = extracted.englishQuery;
         }
       } catch {
         // Heuristic productName/searchQuery stays.
