@@ -250,6 +250,11 @@ export function InvestigatePanel({ adId }: InvestigatePanelProps) {
                             {m.soldQuantity} vendidos
                           </p>
                         )}
+                        {m.source === "gemini_research" && (
+                          <p className="text-[11px] text-muted-foreground">
+                            Encontrado vía búsqueda web — confirmá el precio.
+                          </p>
+                        )}
                         {m.permalink && (
                           <Button
                             variant="outline"

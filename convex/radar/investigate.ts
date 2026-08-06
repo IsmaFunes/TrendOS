@@ -31,6 +31,7 @@ import {
   fetchBlueDolarRate,
 } from "./providers/dolarApi";
 import {
+  researchMercadoLibreListings,
   researchSuppliersForProduct,
   type SupplierCandidate,
 } from "./providers/geminiResearch";
@@ -44,6 +45,7 @@ import {
   similarAdResultValidator,
   supplierOfferValidator,
   type SupplierCountry,
+  type DataSource,
 } from "./validators";
 
 const AR = "AR";
@@ -188,6 +190,8 @@ export type RankedMlMatch = {
   sellerName?: string;
   matchScore: number;
   badge: "best_match" | "match" | "alternative";
+  /** "mercadolibre" = official API; "gemini_research" = web-search fallback. */
+  source: DataSource;
 };
 
 export function rankMlMatches(
@@ -233,6 +237,7 @@ export function rankMlMatches(
       sellerName: item.sellerName,
       matchScore: Number(matchScore.toFixed(2)),
       badge,
+      source: item.source,
     };
   });
 
@@ -806,6 +811,8 @@ export const investigateAd = action({
       }
     }
 
+    const geminiEnabled = Boolean(process.env.GEMINI_API_KEY?.trim());
+
     let mlItems: ExternalProduct[] = [];
     try {
       let accessToken: string | undefined;
@@ -829,6 +836,36 @@ export const investigateAd = action({
         `MercadoLibre: ${err instanceof Error ? err.message : "error de red"}`,
       );
     }
+
+    // ML's official search API returns a policy 403 for most third-party
+    // apps regardless of token validity — fall back to a Google-Search-
+    // grounded lookup for real listings when the direct call found nothing.
+    if (mlItems.length === 0 && geminiEnabled) {
+      try {
+        const listings = await researchMercadoLibreListings({ productName });
+        mlItems = listings.map((l) => ({
+          externalId: l.url,
+          source: "gemini_research" as const,
+          title: l.title,
+          externalUrl: l.url,
+          imageUrl: l.imageUrl,
+          price: l.price,
+          currency: l.currency,
+          sellerName: l.sellerName,
+          condition: l.condition,
+        }));
+        if (mlItems.length === 0) {
+          warnings.push(
+            "MercadoLibre: no encontramos publicaciones ni por API ni por búsqueda web.",
+          );
+        }
+      } catch (err) {
+        warnings.push(
+          `MercadoLibre (búsqueda web): ${err instanceof Error ? err.message : "error"}`,
+        );
+      }
+    }
+
     const { matches: mlMatches, warning: mlWarning } = rankMlMatches(
       searchQuery,
       mlItems,
@@ -836,7 +873,6 @@ export const investigateAd = action({
     );
     if (mlWarning) warnings.push(mlWarning);
 
-    const geminiEnabled = Boolean(process.env.GEMINI_API_KEY?.trim());
     const [micResult, aliResult, geminiSuppliers, dolarResult] =
       await Promise.allSettled([
         searchMadeInChina(searchQuery, { limit: 2 }),

@@ -252,6 +252,8 @@ export const mlMatchResultValidator = v.object({
   sellerName: v.optional(v.string()),
   matchScore: v.number(),
   badge: mlMatchBadgeValidator,
+  /** "mercadolibre" = official API; "gemini_research" = web-search fallback. */
+  source: dataSourceValidator,
 });
 
 export const supplierOfferValidator = v.object({
