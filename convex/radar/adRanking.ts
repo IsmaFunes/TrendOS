@@ -16,6 +16,7 @@ import {
   profileFingerprint,
   type ProfileForAds,
 } from "./geminiAdsCore";
+import { clampScore } from "./metrics";
 
 const AR = "AR";
 
@@ -115,6 +116,7 @@ export const loadRankingContext = internalQuery({
         }),
       ),
       existingFresh: v.boolean(),
+      existingCreatedAt: v.optional(v.number()),
     }),
   ),
   handler: async (ctx, args) => {
@@ -203,6 +205,7 @@ export const loadRankingContext = internalQuery({
       },
       ads,
       existingFresh,
+      existingCreatedAt: existing?.createdAt,
     };
   },
 });
@@ -225,6 +228,13 @@ export const saveRanking = internalMutation({
   returns: v.id("radarAdRankings"),
   handler: async (ctx, args) => {
     const now = Date.now();
+    // score is caller-clamped (parseRankingResponse) before this internal
+    // mutation is reached, but v.number() itself has no bound — re-clamp
+    // here so a future call site can't silently write a bad score.
+    const ranked = args.ranked.map((r) => ({
+      ...r,
+      score: clampScore(r.score),
+    }));
     const existing = await ctx.db
       .query("radarAdRankings")
       .withIndex("by_user_niche", (q) =>
@@ -235,7 +245,7 @@ export const saveRanking = internalMutation({
       userId: args.userId,
       nicheId: args.nicheId,
       profileFingerprint: args.profileFingerprint,
-      ranked: args.ranked,
+      ranked,
       droppedAdIds: args.droppedAdIds,
       model: args.model,
       createdAt: now,

@@ -8,13 +8,17 @@ import { v } from "convex/values";
 import { action, internalAction } from "../_generated/server";
 import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
+import { fetchJsonWithRetry, structuredLog } from "./http";
 import {
   buildRankingPrompt,
   buildScrapeTermsPrompt,
   extractJsonPayload,
   GEMINI_ADS_MODEL,
+  MIN_FORCE_REFRESH_INTERVAL_MS,
   normalizeScrapeTerms,
   parseRankingResponse,
+  RANKING_RESPONSE_SCHEMA,
+  SCRAPE_TERMS_RESPONSE_SCHEMA,
 } from "./geminiAdsCore";
 
 type GeminiGenerateResponse = {
@@ -35,32 +39,75 @@ function extractText(json: GeminiGenerateResponse): string {
     .trim();
 }
 
-async function callGeminiJson(prompt: string): Promise<string> {
+/**
+ * Calls Gemini through the same retry/timeout/structured-logging path every
+ * other collector in convex/radar/providers uses — this used to be a bare
+ * `fetch` with no timeout, no retry on 429/5xx, and no logs to diagnose
+ * failures from. Also asks for a `responseSchema` (Gemini enforces the
+ * shape server-side) and checks for MAX_TOKENS truncation instead of
+ * silently trying to JSON.parse a cut-off response.
+ */
+async function callGeminiJson(
+  prompt: string,
+  options: { label: "terms" | "ranking"; responseSchema: unknown; maxOutputTokens: number },
+): Promise<string> {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) {
     throw new Error("GEMINI_API_KEY is not configured");
   }
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_ADS_MODEL}:generateContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          responseMimeType: "application/json",
-          maxOutputTokens: 4096,
-        },
-      }),
-    },
-  );
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`Gemini HTTP ${res.status}: ${body.slice(0, 200)}`);
+  const started = Date.now();
+  const source = `gemini_ads_${options.label}`;
+
+  const result = await fetchJsonWithRetry<GeminiGenerateResponse>({
+    url: `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_ADS_MODEL}:generateContent?key=${apiKey}`,
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: {
+        responseMimeType: "application/json",
+        responseSchema: options.responseSchema,
+        maxOutputTokens: options.maxOutputTokens,
+      },
+    }),
+    timeoutMs: 20_000,
+  });
+
+  if (!result.ok) {
+    structuredLog({
+      source,
+      errorType: result.errorType,
+      attempt: result.attempts,
+      duration: Date.now() - started,
+      message: result.message,
+      level: "error",
+    });
+    throw new Error(`Gemini ${result.errorType}: ${result.message}`);
   }
-  const json = (await res.json()) as GeminiGenerateResponse;
-  const text = extractText(json);
+
+  const finishReason = result.data.candidates?.[0]?.finishReason;
+  if (finishReason === "MAX_TOKENS") {
+    structuredLog({
+      source,
+      errorType: "truncated",
+      attempt: result.attempts,
+      duration: Date.now() - started,
+      message: `Response hit maxOutputTokens=${options.maxOutputTokens}`,
+      level: "warn",
+    });
+    throw new Error("Gemini response truncated (MAX_TOKENS)");
+  }
+
+  const text = extractText(result.data);
   if (!text) {
+    structuredLog({
+      source,
+      errorType: "empty_response",
+      attempt: result.attempts,
+      duration: Date.now() - started,
+      message: `finishReason=${finishReason ?? "unknown"}`,
+      level: "error",
+    });
     throw new Error("Gemini returned empty ranking/terms payload");
   }
   return text;
@@ -116,6 +163,7 @@ type RankingContext = {
     destinationUrl?: string;
   }>;
   existingFresh: boolean;
+  existingCreatedAt?: number;
 };
 
 /** Expand Meta Ad Library search terms for a niche (fail-soft without key). */
@@ -157,6 +205,11 @@ export const enrichNicheScrapeTerms = internalAction({
           description: args.description,
           label: niche.label,
         }),
+        {
+          label: "terms",
+          responseSchema: SCRAPE_TERMS_RESPONSE_SCHEMA,
+          maxOutputTokens: 1024,
+        },
       );
       const payload = extractJsonPayload(text) as { terms?: unknown };
       const terms = normalizeScrapeTerms(payload.terms, fallback);
@@ -221,6 +274,21 @@ export const refreshMyAdRanking = action({
         dropped: 0,
       };
     }
+    // `force` bypasses the TTL/fingerprint cache above, but this is a public
+    // action any signed-in client can call directly — without a floor here,
+    // a caller could pass force:true in a loop and run up the Gemini bill.
+    if (
+      args.force &&
+      context.existingCreatedAt &&
+      now - context.existingCreatedAt < MIN_FORCE_REFRESH_INTERVAL_MS
+    ) {
+      return {
+        status: "fresh",
+        ranked: context.ads.length,
+        dropped: 0,
+        message: "cooldown",
+      };
+    }
     if (context.ads.length === 0) {
       return { status: "no_ads", ranked: 0, dropped: 0 };
     }
@@ -231,6 +299,11 @@ export const refreshMyAdRanking = action({
           profile: context.profile,
           ads: context.ads,
         }),
+        {
+          label: "ranking",
+          responseSchema: RANKING_RESPONSE_SCHEMA,
+          maxOutputTokens: 8192,
+        },
       );
       const payload = extractJsonPayload(text);
       const validIds = new Set(context.ads.map((a) => a.id));

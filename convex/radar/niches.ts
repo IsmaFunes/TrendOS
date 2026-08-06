@@ -33,6 +33,7 @@ const nicheStatusValidator = v.union(
 
 const nicheReturnValidator = v.object({
   _id: v.id("radarNiches"),
+  _creationTime: v.number(),
   country: v.string(),
   nicheKey: v.string(),
   keywords: v.array(v.string()),
@@ -356,9 +357,17 @@ export const forceEnqueueScrapeJobs = mutation({
   },
 });
 
-/** Worker: claim next pending scrape job. */
+/**
+ * Worker: claim next pending scrape job.
+ *
+ * Pass `nicheId` to claim that niche's job specifically instead of the
+ * oldest pending job in the whole queue — without it, `--force-niche`
+ * on the worker only *enqueues* the target niche's job; whichever job is
+ * oldest overall still gets claimed first, silently scraping the wrong
+ * niche if anything else was already pending.
+ */
 export const claimNextScrapeJob = mutation({
-  args: { secret: v.string() },
+  args: { secret: v.string(), nicheId: v.optional(v.id("radarNiches")) },
   returns: v.union(
     v.null(),
     v.object({
@@ -375,12 +384,18 @@ export const claimNextScrapeJob = mutation({
       throw new Error("Unauthorized");
     }
 
-    const pending = await ctx.db
-      .query("radarNicheScrapeJobs")
-      .withIndex("by_status_created", (q) => q.eq("status", "pending"))
-      .order("asc")
-      .take(1);
-    const job = pending[0];
+    const job = args.nicheId
+      ? await ctx.db
+          .query("radarNicheScrapeJobs")
+          .withIndex("by_niche_status", (q) =>
+            q.eq("nicheId", args.nicheId!).eq("status", "pending"),
+          )
+          .first()
+      : await ctx.db
+          .query("radarNicheScrapeJobs")
+          .withIndex("by_status_created", (q) => q.eq("status", "pending"))
+          .order("asc")
+          .first();
     if (!job) return null;
 
     const niche = await ctx.db.get(job.nicheId);

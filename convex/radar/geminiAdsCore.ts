@@ -8,6 +8,50 @@ export const AD_RANKING_TTL_MS = 12 * 60 * 60 * 1000;
 export const MAX_ADS_TO_RANK = 60;
 /** Bump to invalidate cached rankings when gate/prompt rules change. */
 export const RANKING_RULES_VERSION = "v2-strict-niche";
+/**
+ * Floor between forced re-ranks for one user+niche, regardless of `force`.
+ * `refreshMyAdRanking` is a public action a client can call directly (not
+ * only from the ads-page effect), so without this a caller could pass
+ * `force: true` in a loop and burn Gemini quota — the fingerprint/TTL cache
+ * only protects the non-forced path.
+ */
+export const MIN_FORCE_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+
+/** Gemini `responseSchema` (Schema proto — type names are uppercase). */
+export const SCRAPE_TERMS_RESPONSE_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    terms: { type: "ARRAY", items: { type: "STRING" } },
+  },
+  required: ["terms"],
+} as const;
+
+export const RANKING_RESPONSE_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    keep: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          id: { type: "STRING" },
+          score: { type: "NUMBER" },
+          reason: { type: "STRING" },
+        },
+        required: ["id", "score"],
+      },
+    },
+    drop: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: { id: { type: "STRING" } },
+        required: ["id"],
+      },
+    },
+  },
+  required: ["keep", "drop"],
+} as const;
 
 export type ProfileForAds = {
   businessName: string;

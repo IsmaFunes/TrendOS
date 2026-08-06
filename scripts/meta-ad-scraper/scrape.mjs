@@ -431,14 +431,11 @@ async function scrapeTerms(page, terms, limit, debug) {
   return [...byId.values()].slice(0, limit);
 }
 
-async function forceEnqueue(args) {
+async function forceEnqueue(nicheId) {
   const { client, secret } = clientAndSecret();
   const result = await client.mutation(
     anyApi.radar.niches.forceEnqueueScrapeJobs,
-    {
-      secret,
-      nicheId: args.forceNicheId || args.nicheId,
-    },
+    { secret, nicheId },
   );
   console.log(
     `Force-enqueued ${result.enqueued} job(s) for ${result.nicheIds.length} niche(s).`,
@@ -448,8 +445,13 @@ async function forceEnqueue(args) {
 
 async function runQueue(args, debug) {
   const { client, secret } = clientAndSecret();
+  // --force-niche means "run this niche" — claim its job specifically so an
+  // older pending job for some other niche can't get scraped instead.
+  const targetNicheId = args.force
+    ? args.forceNicheId || args.nicheId
+    : undefined;
   if (args.force) {
-    await forceEnqueue(args);
+    await forceEnqueue(targetNicheId);
   }
   const { browser, page } = await launchBrowser();
   let processed = 0;
@@ -457,6 +459,7 @@ async function runQueue(args, debug) {
     for (let i = 0; i < args.maxJobs; i++) {
       const job = await client.mutation(anyApi.radar.niches.claimNextScrapeJob, {
         secret,
+        nicheId: targetNicheId,
       });
       if (!job) {
         console.log(i === 0 ? "No pending niche scrape jobs." : "Queue empty.");
