@@ -576,6 +576,8 @@ export function parseGeminiResearchResponseForTests(
 // ─── Investigate: supplier lookup for one concrete product ────────────
 
 export type SupplierCandidate = {
+  /** The specific product title the offer is for — required so callers can verify relevance. */
+  title: string;
   supplierName?: string;
   country: "AR" | "CN" | "BR";
   unitPrice: number;
@@ -623,8 +625,16 @@ function parseSupplierJson(text: string): SupplierCandidate[] | null {
           ? row.u
           : null;
     const unitPrice = asPositiveNumber(row.price ?? row.p);
-    // A supplier candidate without a source URL and a real price is not verifiable — drop it.
-    if (!country || !url || unitPrice == null) continue;
+    const title =
+      typeof row.title === "string"
+        ? row.title.trim()
+        : typeof row.t === "string"
+          ? row.t.trim()
+          : "";
+    // Drop anything we can't verify: no URL/price, or no product title to
+    // check relevance against (a supplier offer with no title is exactly
+    // how an unrelated product slips through unnoticed).
+    if (!country || !url || unitPrice == null || !title) continue;
     const currency = asCurrencyCode(
       row.currency ?? row.cur,
       country === "AR" ? "ARS" : country === "BR" ? "BRL" : "USD",
@@ -646,6 +656,7 @@ function parseSupplierJson(text: string): SupplierCandidate[] | null {
           ? row.supplierName.slice(0, 80)
           : undefined;
     out.push({
+      title: title.slice(0, 200),
       supplierName,
       country,
       unitPrice,
@@ -673,21 +684,27 @@ export async function researchSuppliersForProduct(input: {
   const niche = input.niche?.trim();
 
   const prompt = `Sos sourcing agent para un ecommerce en Argentina.
-Producto a abastecer: "${input.productName}"${niche ? ` (nicho del seller: ${niche})` : ""}.
+Producto EXACTO a abastecer: "${input.productName}"${niche ? ` (nicho del seller: ${niche})` : ""}.
 
 Usá Google Search para encontrar ofertas de compra REALES y verificables (mayoristas,
-importadoras, fabricantes o marketplaces B2B) para ese producto en estos 3 países:
+importadoras, fabricantes o marketplaces B2B) para ESE PRODUCTO ESPECÍFICO — no un
+producto relacionado, no un accesorio, no otra categoría del mismo rubro — en estos
+3 países:
 - AR (Argentina): mayorista/distribuidor local — el seller NO tendría que importar.
 - CN (China): Alibaba / Made-in-China / fabricante directo — requiere importar.
 - BR (Brasil): mayorista/distribuidor — requiere importar a Argentina.
 
-Hasta ${maxPerCountry} ofertas por país (menos si no encontrás suficientes reales).
-Cada oferta DEBE tener una URL real de la ficha/publicación y un precio unitario numérico.
-NO inventes proveedores, precios ni URLs. Si no encontrás nada confiable para un país, omitilo.
+RECHAZÁ cualquier resultado donde el título real de la publicación/ficha no describa
+claramente el mismo producto que "${input.productName}" — ante la duda, NO lo incluyas.
+Hasta ${maxPerCountry} ofertas por país (menos si no encontrás suficientes que calcen).
+Cada oferta DEBE tener: el título REAL tal como aparece en la publicación, una URL real
+de esa ficha, y un precio unitario numérico.
+NO inventes proveedores, títulos, precios ni URLs. Si no encontrás nada confiable y
+relevante para un país, omitilo.
 
 Respondé SOLO JSON válido (sin markdown):
-{"suppliers":[{"country":"AR","supplier":"Nombre","price":1200,"currency":"ARS","moq":10,"leadTimeDays":5,"url":"https://..."}]}
-Campos obligatorios: country (AR|CN|BR), price, url. moq/leadTimeDays/currency opcionales.`;
+{"suppliers":[{"country":"AR","title":"Título real de la publicación","supplier":"Nombre","price":1200,"currency":"ARS","moq":10,"leadTimeDays":5,"url":"https://..."}]}
+Campos obligatorios: country (AR|CN|BR), title, price, url. moq/leadTimeDays/currency opcionales.`;
 
   const { text, finishReason } = await callGeminiWithSearch(apiKey, prompt);
   const parsed = parseSupplierJson(text);
