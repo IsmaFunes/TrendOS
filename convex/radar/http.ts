@@ -56,9 +56,12 @@ export async function fetchJsonWithRetry<T>(
       if (res.status === 429 || res.status >= 500) {
         lastErrorType =
           res.status === 429 ? "rate_limit" : "temporary_error";
-        lastMessage = `HTTP ${res.status}`;
-        // Consume body without logging secrets
-        await res.text().catch(() => "");
+        // Response bodies here are API error descriptions, not secrets —
+        // safe (and needed) to surface for diagnosis, just capped in size.
+        const body = await res.text().catch(() => "");
+        lastMessage = body
+          ? `HTTP ${res.status}: ${body.slice(0, 300)}`
+          : `HTTP ${res.status}`;
         const backoff = Math.min(8_000, 400 * 2 ** (attempt - 1));
         await sleep(backoff);
         continue;
@@ -75,13 +78,15 @@ export async function fetchJsonWithRetry<T>(
       }
 
       if (!res.ok) {
-        await res.text().catch(() => "");
+        const body = await res.text().catch(() => "");
         return {
           ok: false,
           errorType: "http_error",
           status: res.status,
           attempts: attempt,
-          message: `HTTP ${res.status}`,
+          message: body
+            ? `HTTP ${res.status}: ${body.slice(0, 300)}`
+            : `HTTP ${res.status}`,
         };
       }
 
