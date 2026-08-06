@@ -18,6 +18,7 @@ export type ExternalProduct = {
   source: DataSource;
   title: string;
   externalUrl?: string;
+  imageUrl?: string;
   price?: number;
   originalPrice?: number;
   currency?: string;

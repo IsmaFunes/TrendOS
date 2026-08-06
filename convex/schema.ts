@@ -4,10 +4,17 @@ import {
   classificationValidator,
   dataSourceValidator,
   explanationValidator,
+  investigationClassificationValidator,
+  investigationScoreBreakdownValidator,
+  investigationStatusValidator,
   jobStatusValidator,
   jobTypeValidator,
+  mlMatchResultValidator,
   productStatusValidator,
+  profitEstimateValidator,
   reviewStatusValidator,
+  similarAdResultValidator,
+  supplierOfferValidator,
 } from "./radar/validators";
 
 export default defineSchema({
@@ -478,4 +485,36 @@ export default defineSchema({
     .index("by_page", ["pageId"])
     .index("by_destination", ["destinationUrl"])
     .index("by_active_country", ["isActive", "country"]),
+
+  // ─── Investigate (on-demand per-ad research, cached) ────────────────
+
+  /**
+   * One row per (adId, userId) investigation run. Written only by the
+   * `radar.investigate.investigateAd` action via an internal mutation —
+   * never patched directly from client input, so the 0–10 `score` and the
+   * 0–1 sub-scores below are always server-computed and clamped before
+   * insert, not client-supplied deltas.
+   */
+  radarAdInvestigations: defineTable({
+    adId: v.id("radarAds"),
+    userId: v.id("users"),
+    productQuery: v.string(),
+    status: investigationStatusValidator,
+    errorMessage: v.optional(v.string()),
+    /**
+     * 0–10, clamped in computeInvestigationScore and re-clamped in
+     * saveInvestigation before insert — this row is only ever written by
+     * that internal mutation, never patched from a public/client mutation.
+     */
+    score: v.number(),
+    classification: investigationClassificationValidator,
+    scoreBreakdown: investigationScoreBreakdownValidator,
+    similarAds: v.array(similarAdResultValidator),
+    mlMatches: v.array(mlMatchResultValidator),
+    suppliers: v.array(supplierOfferValidator),
+    profit: v.optional(profitEstimateValidator),
+    warnings: v.array(v.string()),
+    createdAt: v.number(),
+    expiresAt: v.number(),
+  }).index("by_ad_user", ["adId", "userId"]),
 });

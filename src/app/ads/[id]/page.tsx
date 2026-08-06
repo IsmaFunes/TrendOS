@@ -7,6 +7,7 @@ import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
 import { AppShell } from "@/components/AppShell";
 import { AdCreative } from "@/components/AdCreative";
+import { InvestigatePanel } from "@/components/InvestigatePanel";
 
 export default function AdDetailPage() {
   const params = useParams();
@@ -81,6 +82,8 @@ export default function AdDetailPage() {
           </div>
         </article>
       )}
+
+      {ad && <InvestigatePanel adId={ad._id} />}
     </AppShell>
   );
 }

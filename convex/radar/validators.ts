@@ -188,3 +188,93 @@ export const DEFAULT_PENALTY_CAPS = {
   lowConfidence: 15,
   singleSource: 10,
 } as const;
+
+// ─── Investigate feature (on-demand per-ad research) ──────────────────
+
+export const investigationStatusValidator = v.union(
+  v.literal("ready"),
+  v.literal("error"),
+);
+export type InvestigationStatus = "ready" | "error";
+
+/** Coarse opportunity read for the 0–10 investigation score. */
+export const investigationClassificationValidator = v.union(
+  v.literal("strong"),
+  v.literal("moderate"),
+  v.literal("weak"),
+);
+export type InvestigationClassification = "strong" | "moderate" | "weak";
+
+/** Sourcing countries in scope for the Investigate supplier search. */
+export const supplierCountryValidator = v.union(
+  v.literal("AR"),
+  v.literal("CN"),
+  v.literal("BR"),
+);
+export type SupplierCountry = "AR" | "CN" | "BR";
+
+export const mlMatchBadgeValidator = v.union(
+  v.literal("best_match"),
+  v.literal("match"),
+  v.literal("alternative"),
+);
+export type MlMatchBadge = "best_match" | "match" | "alternative";
+
+export const investigationScoreBreakdownValidator = v.object({
+  adSignal: v.number(),
+  mlSignal: v.number(),
+  sourcingSignal: v.number(),
+  nicheFit: v.number(),
+});
+
+export const similarAdResultValidator = v.object({
+  adId: v.id("radarAds"),
+  pageName: v.string(),
+  imageUrl: v.optional(v.string()),
+  videoUrl: v.optional(v.string()),
+  destinationUrl: v.optional(v.string()),
+  snapshotUrl: v.optional(v.string()),
+  activeDays: v.number(),
+  matchScore: v.number(),
+  storeQualityScore: v.number(),
+  storeQualityLabel: v.string(),
+});
+
+export const mlMatchResultValidator = v.object({
+  externalId: v.string(),
+  title: v.string(),
+  imageUrl: v.optional(v.string()),
+  permalink: v.optional(v.string()),
+  price: v.optional(v.number()),
+  currency: v.optional(v.string()),
+  soldQuantity: v.optional(v.number()),
+  condition: v.optional(v.string()),
+  sellerName: v.optional(v.string()),
+  matchScore: v.number(),
+  badge: mlMatchBadgeValidator,
+});
+
+export const supplierOfferValidator = v.object({
+  supplierName: v.optional(v.string()),
+  country: supplierCountryValidator,
+  isImport: v.boolean(),
+  unitPrice: v.number(),
+  currency: v.string(),
+  moq: v.optional(v.number()),
+  leadTimeDays: v.optional(v.number()),
+  url: v.optional(v.string()),
+  source: v.string(),
+});
+
+export const profitEstimateValidator = v.object({
+  bestSupplierPrice: v.optional(v.number()),
+  bestSupplierCurrency: v.optional(v.string()),
+  bestSupplierCountry: v.optional(supplierCountryValidator),
+  estimatedSalePrice: v.optional(v.number()),
+  estimatedSaleCurrency: v.optional(v.string()),
+  estimatedProfit: v.optional(v.number()),
+  estimatedMargin: v.optional(v.number()),
+  platformFeeRate: v.optional(v.number()),
+  isEstimated: v.boolean(),
+  note: v.optional(v.string()),
+});
