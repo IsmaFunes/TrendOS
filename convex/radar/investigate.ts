@@ -144,8 +144,14 @@ export type RankedSimilarAd = {
   storeQualityLabel: string;
 };
 
-/** Minimum text-similarity to count as "the same product" advertised elsewhere. */
-const SIMILAR_AD_MIN_MATCH = 0.12;
+/**
+ * Minimum text-similarity to count as "the same product" advertised
+ * elsewhere — raised from an earlier 0.12, which let coincidental token
+ * overlap (e.g. sharing one generic word) qualify as a match.
+ */
+const SIMILAR_AD_MIN_MATCH = 0.22;
+/** Match-score gap within which store/activeDays may break a near-tie. */
+const SIMILAR_AD_TIE_MARGIN = 0.05;
 
 export function rankSimilarAds(
   searchQuery: string,
@@ -153,15 +159,23 @@ export function rankSimilarAds(
   limit = 3,
 ): RankedSimilarAd[] {
   const scored = candidates
-    .map((c) => {
-      const matchScore = textSimilarity(searchQuery, `${c.pageName} ${c.body}`);
-      const activeDaysNorm = clamp01(c.activeDays / 60);
-      const combined =
-        matchScore * 0.55 + activeDaysNorm * 0.25 + c.storeQualityScore * 0.2;
-      return { c, matchScore, combined };
-    })
+    .map((c) => ({
+      c,
+      matchScore: textSimilarity(searchQuery, `${c.pageName} ${c.body}`),
+    }))
     .filter((s) => s.matchScore >= SIMILAR_AD_MIN_MATCH)
-    .sort((a, b) => b.combined - a.combined)
+    .sort((a, b) => {
+      // A better product match always wins — store credibility and ad
+      // longevity only decide between two candidates that are already
+      // close matches, they can never promote a weaker match over a
+      // stronger one.
+      if (Math.abs(b.matchScore - a.matchScore) > SIMILAR_AD_TIE_MARGIN) {
+        return b.matchScore - a.matchScore;
+      }
+      const tieBreak = (s: SimilarAdCandidate) =>
+        clamp01(s.activeDays / 60) * 0.5 + s.storeQualityScore * 0.5;
+      return tieBreak(b.c) - tieBreak(a.c);
+    })
     .slice(0, limit);
 
   return scored.map(({ c, matchScore }) => ({
@@ -567,6 +581,41 @@ Respondé SOLO JSON: {"productName":"Nombre corto y concreto en español","searc
   return { productName, searchQuery, englishQuery: englishQuery || searchQuery };
 }
 
+/**
+ * Text-similarity alone can't tell "same product" from "same category" —
+ * two thermos ads share plenty of tokens without being the same SKU. This
+ * asks Gemini to judge the shortlist directly. Returns null (verification
+ * skipped, caller keeps the heuristic order) only on outright failure —
+ * an explicit empty `keep` list is trusted and returned as-is.
+ */
+async function verifySimilarAdsWithGemini(
+  productName: string,
+  candidates: Array<{ adId: string; pageName: string; bodySnippet: string }>,
+): Promise<Set<string> | null> {
+  const prompt = `Sos un curador estricto. Estamos investigando este producto: "${productName}".
+
+Candidatos — otros anuncios de Meta que podrían estar promocionando el MISMO producto:
+${JSON.stringify(
+  candidates.map((c) => ({ id: c.adId, pagina: c.pageName, texto: c.bodySnippet })),
+)}
+
+Para cada candidato, decidí si es genuinamente EL MISMO producto (no solo la misma categoría o rubro — ej. "termo acero 1L" y "termo acero 750ml" NO son el mismo producto). Ante la duda, DESCARTALO.
+
+Respondé SOLO JSON: {"keep":["id1","id2"]}`;
+  try {
+    const text = await callGeminiJsonLocal(prompt);
+    const parsed = JSON.parse(text) as { keep?: unknown };
+    if (!Array.isArray(parsed.keep)) return null;
+    const validIds = new Set(candidates.map((c) => c.adId));
+    const kept = parsed.keep.filter(
+      (id): id is string => typeof id === "string" && validIds.has(id),
+    );
+    return new Set(kept);
+  } catch {
+    return null;
+  }
+}
+
 function isDisplayableCandidate(ad: {
   pageName: string;
   body?: string;
@@ -581,14 +630,22 @@ function isDisplayableCandidate(ad: {
 
 // ───────────────────────── Convex functions ────────────────────────────
 
+/**
+ * Candidates returned for verification carry a body snippet the pure
+ * similarAdResultValidator doesn't (that shape is what actually gets
+ * persisted) — the action strips it after the optional Gemini pass.
+ */
+const contextSimilarAdValidator = similarAdResultValidator.extend({
+  bodySnippet: v.string(),
+});
+
+/** How many ranked candidates to hand to Gemini verification before the final cut to 3. */
+const SIMILAR_AD_VERIFICATION_POOL = 5;
+
 const investigateContextValidator = v.union(
   v.null(),
   v.object({
-    productName: v.string(),
-    searchQuery: v.string(),
     ad: v.object({
-      pageName: v.string(),
-      body: v.string(),
       activeDays: v.number(),
       storeQualityScore: v.number(),
       storeQualityLabel: v.string(),
@@ -597,12 +654,17 @@ const investigateContextValidator = v.union(
       nicheKeywords: v.optional(v.array(v.string())),
       description: v.optional(v.string()),
     }),
-    similarAds: v.array(similarAdResultValidator),
+    similarAds: v.array(contextSimilarAdValidator),
   }),
 );
 
 export const loadInvestigateContext = internalQuery({
-  args: { adId: v.id("radarAds"), userId: v.id("users") },
+  args: {
+    adId: v.id("radarAds"),
+    userId: v.id("users"),
+    /** Best available product signal — Gemini-refined when possible, resolved by the caller before this query runs. */
+    searchQuery: v.string(),
+  },
   returns: investigateContextValidator,
   handler: async (ctx, args) => {
     const ad = await ctx.db.get(args.adId);
@@ -629,12 +691,6 @@ export const loadInvestigateContext = internalQuery({
       adActiveDays,
     });
 
-    const body = ad.body ?? "";
-    const { productName, searchQuery } = buildHeuristicProductSignal(
-      ad.pageName,
-      body,
-    );
-
     const pool = await ctx.db
       .query("radarAds")
       .withIndex("by_active_country", (q) =>
@@ -649,7 +705,7 @@ export const loadInvestigateContext = internalQuery({
       .map((c) => ({
         adId: c._id,
         matchScore: textSimilarity(
-          searchQuery,
+          args.searchQuery,
           `${c.pageName} ${c.body ?? ""}`,
         ),
       }))
@@ -689,14 +745,18 @@ export const loadInvestigateContext = internalQuery({
       });
     }
 
-    const similarAds = rankSimilarAds(searchQuery, shortlisted, 3);
+    const bodyById = new Map(shortlisted.map((s) => [s.adId, s.body]));
+    const similarAds = rankSimilarAds(
+      args.searchQuery,
+      shortlisted,
+      SIMILAR_AD_VERIFICATION_POOL,
+    ).map((sa) => ({
+      ...sa,
+      bodySnippet: (bodyById.get(sa.adId) ?? "").slice(0, 200),
+    }));
 
     return {
-      productName,
-      searchQuery,
       ad: {
-        pageName: ad.pageName,
-        body,
         activeDays: adActiveDays,
         storeQualityScore: targetQuality.score,
         storeQualityLabel: targetQuality.label,
@@ -807,27 +867,31 @@ export const investigateAd = action({
       return { status: "no_user" };
     }
 
-    const context = await ctx.runQuery(
-      internal.radar.investigate.loadInvestigateContext,
-      { adId: args.adId, userId: me._id },
-    );
-    if (!context) {
+    const adBasic = await ctx.runQuery(api.radar.metaAds.getAd, {
+      adId: args.adId,
+    });
+    if (!adBasic) {
       return { status: "error", errorMessage: "Anuncio no encontrado" };
     }
 
     const warnings: string[] = [];
-    let productName = context.productName;
-    let searchQuery = context.searchQuery;
+    const geminiEnabled = Boolean(process.env.GEMINI_API_KEY?.trim());
+    const heuristic = buildHeuristicProductSignal(
+      adBasic.pageName,
+      adBasic.body ?? "",
+    );
+    let productName = heuristic.productName;
+    let searchQuery = heuristic.searchQuery;
     // English search phrase for China B2B sites (Alibaba/Made-in-China are
     // English-first — searching them in Spanish returns near-random noise).
     // Falls back to the Spanish query when Gemini isn't available/fails.
-    let englishQuery = context.searchQuery;
+    let englishQuery = heuristic.searchQuery;
 
-    if (process.env.GEMINI_API_KEY?.trim()) {
+    if (geminiEnabled) {
       try {
         const refined = await refineProductSignalWithGemini(
-          context.ad.pageName,
-          context.ad.body,
+          adBasic.pageName,
+          adBasic.body ?? "",
         );
         if (refined) {
           productName = refined.productName;
@@ -835,11 +899,20 @@ export const investigateAd = action({
           englishQuery = refined.englishQuery;
         }
       } catch {
-        // Heuristic productName/searchQuery from the context query stays.
+        // Heuristic productName/searchQuery stays.
       }
     }
 
-    const geminiEnabled = Boolean(process.env.GEMINI_API_KEY?.trim());
+    // Candidate matching (similar Meta ads) uses whichever signal is best
+    // by this point — Gemini-refined when available, heuristic otherwise —
+    // so it's never stuck comparing against noisy raw ad-copy tokens.
+    const context = await ctx.runQuery(
+      internal.radar.investigate.loadInvestigateContext,
+      { adId: args.adId, userId: me._id, searchQuery },
+    );
+    if (!context) {
+      return { status: "error", errorMessage: "Anuncio no encontrado" };
+    }
 
     let mlItems: ExternalProduct[] = [];
     try {
@@ -1008,6 +1081,31 @@ export const investigateAd = action({
       fxBrlArs: brlRate != null ? { rate: brlRate, source: "TREND_RADAR_BRL_ARS_RATE" } : null,
     });
 
+    // Text similarity alone can rank same-category-but-different-product
+    // ads too high (e.g. a 750ml thermos vs the 1L one being investigated)
+    // — a final Gemini pass judges the shortlist directly. An explicit
+    // empty verdict is trusted (shows as "no similar ads found"); only an
+    // outright failure falls back to the heuristic-ranked order.
+    let verifiedSimilarAds = context.similarAds;
+    if (geminiEnabled && context.similarAds.length > 0) {
+      const keepIds = await verifySimilarAdsWithGemini(productName, context.similarAds);
+      if (keepIds) {
+        verifiedSimilarAds = context.similarAds.filter((sa) => keepIds.has(sa.adId));
+      }
+    }
+    const similarAdsFinal = verifiedSimilarAds.slice(0, 3).map((sa) => ({
+      adId: sa.adId,
+      pageName: sa.pageName,
+      imageUrl: sa.imageUrl,
+      videoUrl: sa.videoUrl,
+      destinationUrl: sa.destinationUrl,
+      snapshotUrl: sa.snapshotUrl,
+      activeDays: sa.activeDays,
+      matchScore: sa.matchScore,
+      storeQualityScore: sa.storeQualityScore,
+      storeQualityLabel: sa.storeQualityLabel,
+    }));
+
     const nicheFitScore = nicheRelevance(productName, {
       keywords: context.profile.nicheKeywords,
       description: context.profile.description,
@@ -1016,7 +1114,7 @@ export const investigateAd = action({
     const scoreResult = computeInvestigationScore({
       targetActiveDays: context.ad.activeDays,
       targetStoreQuality: context.ad.storeQualityScore,
-      similarAdCount: context.similarAds.length,
+      similarAdCount: similarAdsFinal.length,
       bestMlMatchScore: bestMl?.matchScore ?? 0,
       bestMlSoldQuantity: bestMl?.soldQuantity,
       mlMatchCount: mlMatches.length,
@@ -1035,7 +1133,7 @@ export const investigateAd = action({
         score: scoreResult.score,
         classification: scoreResult.classification,
         scoreBreakdown: scoreResult.breakdown,
-        similarAds: context.similarAds,
+        similarAds: similarAdsFinal,
         mlMatches,
         suppliers: suppliersFinal,
         profit,
