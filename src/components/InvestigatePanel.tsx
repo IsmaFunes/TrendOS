@@ -130,40 +130,89 @@ export function InvestigatePanel({ adId }: InvestigatePanelProps) {
             </Card>
 
             <Card className="p-5">
-              <h3 className="text-sm font-medium">Ganancia estimada</h3>
+              <h3 className="text-sm font-medium">Calculadora de rentabilidad</h3>
               {investigation.profit ? (
-                <div className="mt-3 grid grid-cols-2 gap-4 text-sm sm:grid-cols-4">
-                  <div>
-                    <p className="text-xs text-muted-foreground">Costo proveedor</p>
-                    <p className="font-medium">
-                      {formatMoney(investigation.profit.bestSupplierPrice, investigation.profit.bestSupplierCurrency)}
-                    </p>
+                <>
+                  <div className="mt-4 flex flex-col gap-2 text-sm">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-muted-foreground">
+                        Costo por unidad (proveedor)
+                      </span>
+                      <span>
+                        {formatMoney(
+                          investigation.profit.bestSupplierPrice,
+                          investigation.profit.bestSupplierCurrency,
+                        )}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-muted-foreground">
+                        Precio sugerido de venta (ML)
+                      </span>
+                      <span>
+                        {investigation.profit.estimatedSalePrice != null
+                          ? formatArs(investigation.profit.estimatedSalePrice)
+                          : "—"}
+                      </span>
+                    </div>
+                    {investigation.profit.estimatedShippingCost != null && (
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-muted-foreground">
+                          Envío a cliente estimado
+                          {investigation.profit.shippingCostRate != null &&
+                            ` (~${(investigation.profit.shippingCostRate * 100).toFixed(0)}%)`}
+                        </span>
+                        <span>{formatArs(investigation.profit.estimatedShippingCost)}</span>
+                      </div>
+                    )}
+                    {investigation.profit.platformFeeRate != null &&
+                      investigation.profit.estimatedSalePrice != null && (
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-muted-foreground">
+                            Comisión Mercado Libre (~
+                            {(investigation.profit.platformFeeRate * 100).toFixed(0)}%)
+                          </span>
+                          <span>
+                            {formatArs(
+                              investigation.profit.estimatedSalePrice *
+                                investigation.profit.platformFeeRate,
+                            )}
+                          </span>
+                        </div>
+                      )}
+                    {investigation.profit.estimatedAdSpend != null && (
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-muted-foreground">
+                          Inversión en ads estimada
+                          {investigation.profit.adSpendRate != null &&
+                            ` (~${(investigation.profit.adSpendRate * 100).toFixed(0)}%)`}
+                        </span>
+                        <span>{formatArs(investigation.profit.estimatedAdSpend)}</span>
+                      </div>
+                    )}
                   </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">Precio venta (ML)</p>
-                    <p className="font-medium">
-                      {investigation.profit.estimatedSalePrice != null
-                        ? formatArs(investigation.profit.estimatedSalePrice)
-                        : "—"}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">Ganancia estimada</p>
-                    <p className="font-medium">
-                      {investigation.profit.estimatedProfit != null
-                        ? formatArs(investigation.profit.estimatedProfit)
-                        : "—"}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">Margen</p>
-                    <p className="font-medium">
+
+                  <div className="my-4 border-t border-border" />
+
+                  <div className="flex items-baseline justify-between">
+                    <span className="text-sm text-muted-foreground">Margen neto</span>
+                    <span className="font-display text-2xl text-accent-300">
                       {investigation.profit.estimatedMargin != null
                         ? `${(investigation.profit.estimatedMargin * 100).toFixed(0)}%`
                         : "—"}
-                    </p>
+                    </span>
                   </div>
-                </div>
+                  <div className="mt-1 flex items-center justify-between text-sm">
+                    <span className="text-muted-foreground">
+                      Ganancia estimada / unidad
+                    </span>
+                    <span className="font-medium">
+                      {investigation.profit.estimatedProfit != null
+                        ? formatArs(investigation.profit.estimatedProfit)
+                        : "—"}
+                    </span>
+                  </div>
+                </>
               ) : (
                 <p className="mt-2 text-sm text-muted-foreground">
                   No encontramos proveedores para estimar ganancia.

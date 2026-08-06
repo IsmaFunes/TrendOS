@@ -24,10 +24,13 @@ import { resolve } from "node:path";
 
 const COUNTRY = "AR";
 
+/** Target ads per niche job — "for now, the max is 15" per product direction. */
+const DEFAULT_NICHE_AD_TARGET = 15;
+
 function parseArgs(argv) {
   const out = {
     terms: [],
-    limit: 40,
+    limit: DEFAULT_NICHE_AD_TARGET,
     seedFile: process.env.META_ADS_SEED_FILE,
     nicheId: undefined,
     queue: true,
@@ -415,19 +418,28 @@ async function launchBrowser() {
   return { browser, page: await context.newPage() };
 }
 
+/**
+ * Work through terms in order, accumulating unique ads, and stop as soon as
+ * `limit` is reached instead of visiting every term with an even (and often
+ * wasteful) per-term split — a term that turns out to be dead weight (0
+ * results) shouldn't have starved a productive one of budget, and a
+ * productive one shouldn't get cut off early just because there are more
+ * terms left in the list.
+ */
 async function scrapeTerms(page, terms, limit, debug) {
-  const all = [];
-  const perTerm = Math.max(5, Math.floor(limit / Math.max(terms.length, 1)));
+  const byId = new Map();
   for (const term of terms) {
+    if (byId.size >= limit) break;
+    const remaining = limit - byId.size;
     try {
-      const batch = await scrapeTerm(page, term, perTerm, debug);
-      all.push(...batch);
+      const batch = await scrapeTerm(page, term, remaining, debug);
+      for (const ad of batch) {
+        if (!byId.has(ad.externalAdId)) byId.set(ad.externalAdId, ad);
+      }
     } catch (err) {
       console.warn(`Term "${term}" failed:`, err.message);
     }
   }
-  const byId = new Map();
-  for (const ad of all) byId.set(ad.externalAdId, ad);
   return [...byId.values()].slice(0, limit);
 }
 

@@ -129,7 +129,7 @@ export function normalizeScrapeTerms(terms: unknown, fallback: string[]): string
     }
   }
   for (const t of fallback) push(t);
-  return [...new Set(out)].slice(0, 8);
+  return [...new Set(out)].slice(0, 10);
 }
 
 export type RankedAdRef = {
@@ -203,19 +203,22 @@ export function buildScrapeTermsPrompt(input: {
   label?: string;
 }): string {
   return `Sos un especialista en Meta Ad Library para ecommerce en Argentina.
-Dado el nicho de una tienda, sugerí términos de búsqueda ESPECÍFICOS (2-5 palabras) en español rioplatense para encontrar anuncios de PRODUCTOS CONCRETOS que la tienda realmente vendería.
+Dado el nicho de una tienda, sugerí términos de búsqueda para encontrar anuncios de PRODUCTOS CONCRETOS que la tienda realmente vendería.
 
 Nicho keywords: ${JSON.stringify(input.keywords)}
 Descripción: ${input.description?.trim() || "(sin descripción)"}
 Label: ${input.label ?? ""}
 
+CONTEXTO CLAVE — cómo busca Meta Ad Library: la búsqueda es "keyword_unordered", es decir requiere que TODAS las palabras del término aparezcan en el texto del anuncio (en cualquier orden). Un término de 4+ palabras técnicas casi nunca matchea nada real — es la causa #1 de "0 resultados". Un término de 1-2 palabras comunes matchea muchísimo más.
+
 Reglas:
-- Máximo 8 términos
-- Cada término tiene que nombrar un PRODUCTO CONCRETO — con material, tipo, uso o variante — nunca la categoría/rubro sola.
-  Ejemplos BUENOS: "mate imperial acero", "bombilla alpaca curva", "yerbera de cuero".
-  Ejemplos MALOS (rechazar): "mates", "accesorios para mate", "productos de mate", "artículos de cocina" — son rubro, no producto.
-- PROHIBIDO un término de una sola palabra, o que sea solo el nicho repetido (si el nicho es "mates", ningún término puede ser literalmente "mates" o "mate").
-- Priorizá DIVERSIDAD real: cubrí distintos sub-productos del nicho, no 8 variaciones del mismo término amplio.
+- Máximo 10 términos.
+- 1 a 3 palabras por término (preferí 1-2). NUNCA más de 3.
+- Test obligatorio antes de sugerir un término: "¿Un vendedor argentino de ecommerce escribiría literalmente estas palabras en el texto de un anuncio?" Si suena a jerga técnica/catálogo y no a texto de venta real, descartalo.
+- Cada término tiene que nombrar un PRODUCTO CONCRETO — puede ser una sola palabra si es específica (ej. "mancuernas", "yerbera"), pero NUNCA la categoría/rubro genérica sola (ej. "fitness", "accesorios", o el nicho repetido tal cual — si el nicho es "mates", ningún término puede ser literalmente "mates" o "mate").
+  Ejemplos BUENOS: "mancuernas ajustables", "banda elástica", "guantes gym", "mat yoga", "yerbera cuero".
+  Ejemplos MALOS (rechazar): "calleras de cuero calistenia" (jerga técnica de 4 palabras, nadie escribe así en un anuncio), "straps para peso muerto" (demasiado técnico/específico), "accesorios para gimnasio" (categoría, no producto), "mates" (nicho repetido).
+- Priorizá DIVERSIDAD real: cubrí distintos sub-productos del nicho con palabras simples, no variaciones técnicas del mismo término.
 - PROHIBIDO incluir ganchos de oferta: "envío gratis", "cuotas sin interés", "2x1", "promo", "oferta", "gratis"
 - No inventes marcas irrelevantes
 

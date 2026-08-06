@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useConvexAuth, useMutation, useQuery } from "convex/react";
 import { useRouter } from "next/navigation";
 import { api } from "../../../convex/_generated/api";
+import type { Id } from "../../../convex/_generated/dataModel";
 import Link from "next/link";
 import { UserButton } from "@clerk/nextjs";
 import { Check, ChevronRight } from "lucide-react";
@@ -62,7 +63,14 @@ const CHANNELS = [
 const MAX_KEYWORDS = 5;
 const MAX_EXCLUSIONS = 10;
 
-const STEP_LABELS = ["Argentina", "Objetivo", "Canales", "Nicho", "Logística"];
+const STEP_LABELS = [
+  "Argentina",
+  "Objetivo",
+  "Canales",
+  "Categorías",
+  "Nicho",
+  "Logística",
+];
 
 function Stepper({ step, total }: { step: number; total: number }) {
   const labels = STEP_LABELS.slice(0, total);
@@ -142,6 +150,7 @@ export default function OnboardingPage() {
   const router = useRouter();
   const { isAuthenticated, isLoading: authLoading } = useConvexAuth();
   const user = useQuery(api.users.me);
+  const categories = useQuery(api.categories.list);
   const ensureUser = useMutation(api.users.ensureUser);
   const completeOnboarding = useMutation(api.users.completeOnboarding);
 
@@ -149,6 +158,9 @@ export default function OnboardingPage() {
   const [goal, setGoal] = useState<BusinessGoal | null>(null);
   const [channels, setChannels] = useState<string[]>([]);
   const [storeUrl, setStoreUrl] = useState("");
+  const [selectedCategoryIds, setSelectedCategoryIds] = useState<
+    Id<"categories">[]
+  >([]);
   const [nicheKeywords, setNicheKeywords] = useState<string[]>([]);
   const [keywordDraft, setKeywordDraft] = useState("");
   const [excludedKeywords, setExcludedKeywords] = useState<string[]>([]);
@@ -187,6 +199,12 @@ export default function OnboardingPage() {
     );
   }
 
+  function toggleCategory(id: Id<"categories">) {
+    setSelectedCategoryIds((prev) =>
+      prev.includes(id) ? prev.filter((c) => c !== id) : [...prev, id],
+    );
+  }
+
   function addKeyword() {
     const value = keywordDraft.trim().replace(/\s+/g, " ");
     if (!value || nicheKeywords.length >= MAX_KEYWORDS) return;
@@ -218,7 +236,7 @@ export default function OnboardingPage() {
     channels.includes("Tienda Nube") ||
     channels.includes("Shopify") ||
     channels.includes("Tienda propia");
-  const totalSteps = needsLogistics ? 5 : 4;
+  const totalSteps = needsLogistics ? 6 : 5;
 
   async function finish() {
     if (!goal) return;
@@ -229,6 +247,7 @@ export default function OnboardingPage() {
         goal,
         channels: channels.length ? channels : undefined,
         existingStoreUrl: storeUrl.trim() || undefined,
+        categoryIds: selectedCategoryIds.length ? selectedCategoryIds : undefined,
         nicheKeywords,
         excludedKeywords: excludedKeywords.length
           ? excludedKeywords
@@ -342,9 +361,42 @@ export default function OnboardingPage() {
 
         {step === 4 && (
           <section className="flex flex-1 flex-col">
-            <h3>¿Qué tipo de productos te interesan?</h3>
+            <h3>¿Qué categorías vendés?</h3>
             <p className="mt-1 text-sm text-muted-foreground">
-              Escribí palabras clave (ej. cocina, mascotas, fitness).
+              Elegí todas las que apliquen — podés ajustar esto después.
+            </p>
+            <div className="mt-6 flex flex-wrap gap-2">
+              {categories === undefined && (
+                <p className="text-sm text-muted-foreground">
+                  Cargando categorías…
+                </p>
+              )}
+              {categories?.length === 0 && (
+                <p className="text-sm text-muted-foreground">
+                  Todavía no hay categorías cargadas — podés saltar este paso
+                  y usar keywords en el siguiente.
+                </p>
+              )}
+              {categories?.map((cat) => (
+                <ToggleChip
+                  key={cat._id}
+                  selected={selectedCategoryIds.includes(cat._id)}
+                  onClick={() => toggleCategory(cat._id)}
+                >
+                  {cat.name}
+                </ToggleChip>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {step === 5 && (
+          <section className="flex flex-1 flex-col">
+            <h3>Nicho específico</h3>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {selectedCategoryIds.length > 0
+                ? "Opcional — sumá palabras clave para afinar más tu nicho dentro de las categorías que elegiste."
+                : "Escribí palabras clave (ej. cocina, mascotas, fitness)."}
             </p>
             <div className="mt-6 flex max-w-[420px] gap-2">
               <Input
@@ -439,7 +491,7 @@ export default function OnboardingPage() {
           </section>
         )}
 
-        {step === 5 && needsLogistics && (
+        {step === 6 && needsLogistics && (
           <section className="flex flex-1 flex-col">
             <h3>¿Tenés lugar para guardar stock?</h3>
             <p className="mt-1 text-sm text-muted-foreground">
@@ -479,8 +531,13 @@ export default function OnboardingPage() {
               type="button"
               className="flex-1"
               onClick={() => {
-                if (step === 4 && goal !== "browse_ads" && nicheKeywords.length === 0) {
-                  setError("Agregá al menos una keyword");
+                if (
+                  step === 5 &&
+                  goal !== "browse_ads" &&
+                  nicheKeywords.length === 0 &&
+                  selectedCategoryIds.length === 0
+                ) {
+                  setError("Elegí una categoría o agregá una keyword");
                   return;
                 }
                 setError(null);
@@ -497,8 +554,12 @@ export default function OnboardingPage() {
               className="flex-1"
               disabled={saving}
               onClick={() => {
-                if (goal !== "browse_ads" && nicheKeywords.length === 0) {
-                  setError("Agregá al menos una keyword");
+                if (
+                  goal !== "browse_ads" &&
+                  nicheKeywords.length === 0 &&
+                  selectedCategoryIds.length === 0
+                ) {
+                  setError("Elegí una categoría o agregá una keyword");
                   return;
                 }
                 void finish();
