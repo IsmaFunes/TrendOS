@@ -203,7 +203,7 @@ export function buildScrapeTermsPrompt(input: {
   label?: string;
 }): string {
   return `Sos un especialista en Meta Ad Library para ecommerce en Argentina.
-Dado el nicho de una tienda, sugerí términos de búsqueda cortos (2-5 palabras) en español rioplatense para encontrar anuncios comerciales relevantes.
+Dado el nicho de una tienda, sugerí términos de búsqueda ESPECÍFICOS (2-5 palabras) en español rioplatense para encontrar anuncios de PRODUCTOS CONCRETOS que la tienda realmente vendería.
 
 Nicho keywords: ${JSON.stringify(input.keywords)}
 Descripción: ${input.description?.trim() || "(sin descripción)"}
@@ -211,9 +211,12 @@ Label: ${input.label ?? ""}
 
 Reglas:
 - Máximo 8 términos
-- Solo nombres/variantes de PRODUCTO o categoría (ej. "mate imperial", "bombilla alpaca")
+- Cada término tiene que nombrar un PRODUCTO CONCRETO — con material, tipo, uso o variante — nunca la categoría/rubro sola.
+  Ejemplos BUENOS: "mate imperial acero", "bombilla alpaca curva", "yerbera de cuero".
+  Ejemplos MALOS (rechazar): "mates", "accesorios para mate", "productos de mate", "artículos de cocina" — son rubro, no producto.
+- PROHIBIDO un término de una sola palabra, o que sea solo el nicho repetido (si el nicho es "mates", ningún término puede ser literalmente "mates" o "mate").
+- Priorizá DIVERSIDAD real: cubrí distintos sub-productos del nicho, no 8 variaciones del mismo término amplio.
 - PROHIBIDO incluir ganchos de oferta: "envío gratis", "cuotas sin interés", "2x1", "promo", "oferta", "gratis"
-- Evitá términos genéricos vacíos
 - No inventes marcas irrelevantes
 
 Respondé SOLO JSON:

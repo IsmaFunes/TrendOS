@@ -107,6 +107,35 @@ describe("rankSimilarAds", () => {
     expect(ranked[0]!.adId).toBe(strong.adId);
   });
 
+  it("never lets a weaker-but-more-credible match outrank a clearly stronger one", () => {
+    // Both bodies clear the relevance floor (proven by the test above), but
+    // "strong" matches the query much more closely than "weak" does. Before
+    // the fix, giving "weak" a big store + long-running ad could still let
+    // it out-rank "strong" via the weighted formula — now match strength
+    // decides first, credibility only breaks near-ties.
+    const strongButNewStore: SimilarAdCandidate = {
+      ...base,
+      adId: adId(5),
+      body: "Termo acero inoxidable 1L",
+      activeDays: 1,
+      storeQualityScore: 0.1,
+      storeQualityLabel: "Señales limitadas",
+    };
+    const weakButBigStore: SimilarAdCandidate = {
+      ...base,
+      adId: adId(6),
+      body: "Termo acero para mates y termos varios accesorios",
+      activeDays: 90,
+      storeQualityScore: 0.95,
+      storeQualityLabel: "Tienda consolidada",
+    };
+    const ranked = rankSimilarAds("termo acero inoxidable 1l", [
+      weakButBigStore,
+      strongButNewStore,
+    ]);
+    expect(ranked[0]!.adId).toBe(strongButNewStore.adId);
+  });
+
   it("strips the body field and rounds matchScore", () => {
     const ranked = rankSimilarAds("termo acero inoxidable", [base]);
     expect(ranked[0]).not.toHaveProperty("body");
