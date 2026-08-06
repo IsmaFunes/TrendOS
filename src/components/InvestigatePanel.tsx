@@ -181,6 +181,16 @@ export function InvestigatePanel({ adId }: InvestigatePanelProps) {
             </Card>
           </div>
 
+          {investigation.warnings.length > 0 && (
+            <Card className="p-3">
+              <ul className="space-y-1 text-xs text-muted-foreground">
+                {investigation.warnings.map((w, idx) => (
+                  <li key={idx}>· {w}</li>
+                ))}
+              </ul>
+            </Card>
+          )}
+
           {/* Similar Meta ads */}
           <div>
             <h3 className="text-sm font-medium">Anuncios similares en Meta</h3>
@@ -323,14 +333,6 @@ export function InvestigatePanel({ adId }: InvestigatePanelProps) {
               </div>
             )}
           </div>
-
-          {investigation.warnings.length > 0 && (
-            <ul className="space-y-1 text-xs text-muted-foreground">
-              {investigation.warnings.map((w, idx) => (
-                <li key={idx}>· {w}</li>
-              ))}
-            </ul>
-          )}
         </div>
       )}
     </section>
