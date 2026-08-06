@@ -6,6 +6,14 @@ import { useRouter } from "next/navigation";
 import { api } from "../../../convex/_generated/api";
 import Link from "next/link";
 import { UserButton } from "@clerk/nextjs";
+import { Check, ChevronRight } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { ToggleChip } from "@/components/ToggleChip";
+import { BrandLogo } from "@/components/BrandLogo";
+import { cn } from "@/lib/utils";
 
 type BusinessGoal =
   | "start_ecommerce"
@@ -53,6 +61,82 @@ const CHANNELS = [
 
 const MAX_KEYWORDS = 5;
 const MAX_EXCLUSIONS = 10;
+
+const STEP_LABELS = ["Argentina", "Objetivo", "Canales", "Nicho", "Logística"];
+
+function Stepper({ step, total }: { step: number; total: number }) {
+  const labels = STEP_LABELS.slice(0, total);
+  return (
+    <div className="mb-8 flex items-center">
+      {labels.map((label, idx) => {
+        const n = idx + 1;
+        const isDone = n < step;
+        const isCurrent = n === step;
+        return (
+          <div key={label} className="flex flex-1 items-center last:flex-none">
+            {idx > 0 && (
+              <div
+                className={cn(
+                  "mx-1 mb-[18px] h-px flex-1",
+                  n <= step ? "bg-accent-700" : "bg-border",
+                )}
+              />
+            )}
+            <div className="flex flex-none flex-col items-center gap-1.5">
+              <div
+                className={cn(
+                  "flex size-7 flex-none items-center justify-center rounded-full text-xs",
+                  isDone && "bg-accent-800 text-accent-100",
+                  isCurrent &&
+                    "border-[1.5px] border-primary font-semibold text-accent-200",
+                  !isDone && !isCurrent && "border-[1.5px] border-neutral-700 text-neutral-600",
+                )}
+              >
+                {isDone ? <Check className="size-3.5" /> : n}
+              </div>
+              <span
+                className={cn(
+                  "text-[11px]",
+                  isCurrent ? "text-accent-200" : "text-neutral-500",
+                )}
+              >
+                {label}
+              </span>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ChoiceButton({
+  selected,
+  onClick,
+  title,
+  subtitle,
+}: {
+  selected: boolean;
+  onClick: () => void;
+  title: string;
+  subtitle?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "rounded-md border-[1.5px] px-4 py-3.5 text-left text-sm transition-colors",
+        selected
+          ? "border-primary bg-primary/12 text-accent-100"
+          : "border-border bg-transparent text-neutral-300 hover:border-neutral-500",
+      )}
+    >
+      <div className="font-medium">{title}</div>
+      {subtitle && <div className="mt-0.5 text-xs text-muted-foreground">{subtitle}</div>}
+    </button>
+  );
+}
 
 export default function OnboardingPage() {
   const router = useRouter();
@@ -134,6 +218,7 @@ export default function OnboardingPage() {
     channels.includes("Tienda Nube") ||
     channels.includes("Shopify") ||
     channels.includes("Tienda propia");
+  const totalSteps = needsLogistics ? 5 : 4;
 
   async function finish() {
     if (!goal) return;
@@ -163,7 +248,7 @@ export default function OnboardingPage() {
 
   if (authLoading || user === undefined) {
     return (
-      <main className="flex flex-1 items-center justify-center p-8 text-muted">
+      <main className="flex flex-1 items-center justify-center p-8 text-muted-foreground">
         Cargando…
       </main>
     );
@@ -173,317 +258,258 @@ export default function OnboardingPage() {
     return (
       <main className="mx-auto flex max-w-md flex-1 flex-col justify-center gap-4 px-6">
         <h1 className="font-display text-2xl">Entrá para continuar</h1>
-        <Link href="/sign-in" className="rounded-lg bg-accent px-4 py-3 text-center text-white">
+        <Button size="lg" className="w-full" render={<Link href="/sign-in" />}>
           Iniciar sesión
-        </Link>
+        </Button>
       </main>
     );
   }
 
   return (
-    <main className="mx-auto flex w-full max-w-lg flex-1 flex-col px-6 py-8">
+    <main className="mx-auto flex w-full max-w-[760px] flex-1 flex-col px-6 py-12 md:py-16">
       <div className="mb-8 flex items-center justify-between">
-        <Link href="/" className="font-display text-lg">
-          TrendOS
-        </Link>
+        <BrandLogo href="/" size="sm" />
         <UserButton />
       </div>
 
-      <p className="mb-2 text-sm text-muted">Paso {step} de {needsLogistics ? 5 : 4}</p>
+      <h1 className="text-[30px]">Contanos sobre tu negocio</h1>
+      <p className="max-w-[56ch] text-muted-foreground">
+        Esto nos ayuda a armar tu nicho y encontrar los productos con más
+        potencial para vos.
+      </p>
 
-      {step === 1 && (
-        <section className="flex flex-1 flex-col">
-          <h1 className="font-display text-3xl text-foreground">
-            Empezamos en Argentina
-          </h1>
-          <p className="mt-3 text-muted">
-            Por ahora solo buscamos anuncios y productos para el mercado
-            argentino.
-          </p>
-          <button
-            type="button"
-            onClick={() => setStep(2)}
-            className="mt-10 rounded-lg bg-accent px-6 py-3 text-base font-medium text-white"
-          >
-            Continuar
-          </button>
-        </section>
-      )}
+      <Stepper step={step} total={totalSteps} />
 
-      {step === 2 && (
-        <section className="flex flex-1 flex-col">
-          <h1 className="font-display text-3xl">¿Qué querés hacer?</h1>
-          <div className="mt-6 flex flex-col gap-2">
-            {GOALS.map((g) => (
-              <button
-                key={g.id}
-                type="button"
-                onClick={() => {
-                  setGoal(g.id);
-                  setStep(3);
-                }}
-                className={`rounded-xl border px-4 py-4 text-left transition ${
-                  goal === g.id
-                    ? "border-accent bg-surface"
-                    : "border-border bg-surface hover:border-foreground/30"
-                }`}
-              >
-                <div className="font-medium">{g.title}</div>
-                <div className="text-sm text-muted">{g.subtitle}</div>
-              </button>
-            ))}
-          </div>
-          <button
-            type="button"
-            onClick={() => setStep(1)}
-            className="mt-6 text-sm text-muted"
-          >
-            Atrás
-          </button>
-        </section>
-      )}
+      <Card className="min-h-[340px] gap-0 p-8 shadow-elev-md">
+        {step === 1 && (
+          <section className="flex flex-1 flex-col">
+            <h3>Empezamos en Argentina</h3>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Por ahora solo buscamos anuncios y productos para el mercado
+              argentino.
+            </p>
+          </section>
+        )}
 
-      {step === 3 && (
-        <section className="flex flex-1 flex-col">
-          <h1 className="font-display text-3xl">¿Por dónde vendés?</h1>
-          <p className="mt-2 text-muted">Podés elegir más de uno.</p>
-          <div className="mt-6 flex flex-wrap gap-2">
-            {CHANNELS.map((ch) => {
-              const on = channels.includes(ch);
-              return (
-                <button
+        {step === 2 && (
+          <section className="flex flex-1 flex-col">
+            <h3>¿Qué querés hacer?</h3>
+            <div className="mt-6 flex max-w-[420px] flex-col gap-2.5">
+              {GOALS.map((g) => (
+                <ChoiceButton
+                  key={g.id}
+                  selected={goal === g.id}
+                  onClick={() => setGoal(g.id)}
+                  title={g.title}
+                  subtitle={g.subtitle}
+                />
+              ))}
+            </div>
+          </section>
+        )}
+
+        {step === 3 && (
+          <section className="flex flex-1 flex-col">
+            <h3>¿Por dónde vendés?</h3>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Podés elegir más de uno.
+            </p>
+            <div className="mt-6 flex flex-wrap gap-2">
+              {CHANNELS.map((ch) => (
+                <ToggleChip
                   key={ch}
-                  type="button"
+                  selected={channels.includes(ch)}
                   onClick={() => toggleChannel(ch)}
-                  className={`rounded-full px-4 py-2 text-sm ${
-                    on
-                      ? "bg-accent text-white"
-                      : "border border-border bg-surface text-foreground"
-                  }`}
                 >
                   {ch}
-                </button>
-              );
-            })}
-          </div>
-          {needsStoreUrl && (
-            <label className="mt-6 block">
-              <span className="text-sm text-muted">Link de tu tienda (opcional)</span>
-              <input
-                value={storeUrl}
-                onChange={(e) => setStoreUrl(e.target.value)}
-                placeholder="https://…"
-                className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2"
+                </ToggleChip>
+              ))}
+            </div>
+            {needsStoreUrl && (
+              <label className="mt-6 block max-w-[360px]">
+                <span className="mb-1.5 block text-xs text-muted-foreground">
+                  Link de tu tienda (opcional)
+                </span>
+                <Input
+                  value={storeUrl}
+                  onChange={(e) => setStoreUrl(e.target.value)}
+                  placeholder="https://…"
+                />
+              </label>
+            )}
+          </section>
+        )}
+
+        {step === 4 && (
+          <section className="flex flex-1 flex-col">
+            <h3>¿Qué tipo de productos te interesan?</h3>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Escribí palabras clave (ej. cocina, mascotas, fitness).
+            </p>
+            <div className="mt-6 flex max-w-[420px] gap-2">
+              <Input
+                value={keywordDraft}
+                onChange={(e) => setKeywordDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    addKeyword();
+                  }
+                }}
+                placeholder="Agregar keyword"
               />
-            </label>
-          )}
-          <div className="mt-10 flex gap-3">
+              <Button type="button" variant="secondary" onClick={addKeyword}>
+                Agregar
+              </Button>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {nicheKeywords.map((kw) => (
+                <Badge
+                  key={kw}
+                  variant="outline"
+                  render={
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setNicheKeywords((prev) =>
+                          prev.filter((k) => k !== kw),
+                        )
+                      }
+                    />
+                  }
+                >
+                  {kw} ✕
+                </Badge>
+              ))}
+            </div>
+
             <button
               type="button"
-              onClick={() => setStep(2)}
-              className="rounded-lg border border-border px-4 py-3 text-sm"
+              onClick={() => setShowExclusions((v) => !v)}
+              className="mt-6 text-left text-sm text-muted-foreground underline underline-offset-2 hover:text-foreground"
+            >
+              {showExclusions ? "Ocultar" : "No quiero vender…"}
+            </button>
+            {showExclusions && (
+              <div className="mt-2 max-w-[420px]">
+                <div className="flex gap-2">
+                  <Input
+                    value={excludeDraft}
+                    onChange={(e) => setExcludeDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        addExclusion();
+                      }
+                    }}
+                    placeholder="ej. suplementos"
+                  />
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={addExclusion}
+                  >
+                    Agregar
+                  </Button>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {excludedKeywords.map((kw) => (
+                    <Badge
+                      key={kw}
+                      variant="secondary"
+                      render={
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setExcludedKeywords((prev) =>
+                              prev.filter((k) => k !== kw),
+                            )
+                          }
+                        />
+                      }
+                    >
+                      {kw} ✕
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {error && <p className="mt-4 text-sm text-destructive">{error}</p>}
+          </section>
+        )}
+
+        {step === 5 && needsLogistics && (
+          <section className="flex flex-1 flex-col">
+            <h3>¿Tenés lugar para guardar stock?</h3>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Opcional — nos ayuda a filtrar mejor.
+            </p>
+            <div className="mt-6 flex max-w-[420px] flex-col gap-2.5">
+              {(
+                [
+                  [true, "Sí"],
+                  [false, "No / dropshipping"],
+                ] as const
+              ).map(([val, label]) => (
+                <ChoiceButton
+                  key={String(val)}
+                  selected={hasWarehouseStorage === val}
+                  onClick={() => setHasWarehouseStorage(val)}
+                  title={label}
+                />
+              ))}
+            </div>
+            {error && <p className="mt-4 text-sm text-destructive">{error}</p>}
+          </section>
+        )}
+
+        <div className="mt-auto flex gap-2.5 pt-8">
+          {step > 1 && (
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setStep((s) => s - 1)}
             >
               Atrás
-            </button>
-            <button
+            </Button>
+          )}
+          {step < totalSteps ? (
+            <Button
               type="button"
-              onClick={() => setStep(4)}
-              className="rounded-lg bg-accent px-6 py-3 text-sm font-medium text-white"
+              className="flex-1"
+              onClick={() => {
+                if (step === 4 && goal !== "browse_ads" && nicheKeywords.length === 0) {
+                  setError("Agregá al menos una keyword");
+                  return;
+                }
+                setError(null);
+                setStep((s) => s + 1);
+              }}
+              disabled={step === 2 && !goal}
             >
               Continuar
-            </button>
-          </div>
-        </section>
-      )}
-
-      {step === 4 && (
-        <section className="flex flex-1 flex-col">
-          <h1 className="font-display text-3xl">
-            ¿Qué tipo de productos te interesan?
-          </h1>
-          <p className="mt-2 text-muted">
-            Escribí palabras clave (ej. cocina, mascotas, fitness).
-          </p>
-          <div className="mt-6 flex gap-2">
-            <input
-              value={keywordDraft}
-              onChange={(e) => setKeywordDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  addKeyword();
-                }
-              }}
-              placeholder="Agregar keyword"
-              className="flex-1 rounded-lg border border-border bg-surface px-3 py-2"
-            />
-            <button
+              <ChevronRight className="size-3.5" />
+            </Button>
+          ) : (
+            <Button
               type="button"
-              onClick={addKeyword}
-              className="rounded-lg border border-border px-4 py-2 text-sm"
-            >
-              Agregar
-            </button>
-          </div>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {nicheKeywords.map((kw) => (
-              <button
-                key={kw}
-                type="button"
-                onClick={() =>
-                  setNicheKeywords((prev) => prev.filter((k) => k !== kw))
-                }
-                className="rounded-full bg-surface-2 px-3 py-1 text-sm"
-              >
-                {kw} ×
-              </button>
-            ))}
-          </div>
-
-          <button
-            type="button"
-            onClick={() => setShowExclusions((v) => !v)}
-            className="mt-6 text-left text-sm text-muted underline"
-          >
-            {showExclusions ? "Ocultar" : "No quiero vender…"}
-          </button>
-          {showExclusions && (
-            <div className="mt-2">
-              <div className="flex gap-2">
-                <input
-                  value={excludeDraft}
-                  onChange={(e) => setExcludeDraft(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      addExclusion();
-                    }
-                  }}
-                  placeholder="ej. suplementos"
-                  className="flex-1 rounded-lg border border-border bg-surface px-3 py-2"
-                />
-                <button
-                  type="button"
-                  onClick={addExclusion}
-                  className="rounded-lg border border-border px-4 py-2 text-sm"
-                >
-                  Agregar
-                </button>
-              </div>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {excludedKeywords.map((kw) => (
-                  <button
-                    key={kw}
-                    type="button"
-                    onClick={() =>
-                      setExcludedKeywords((prev) =>
-                        prev.filter((k) => k !== kw),
-                      )
-                    }
-                    className="rounded-full bg-surface-2 px-3 py-1 text-sm"
-                  >
-                    {kw} ×
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {error && <p className="mt-4 text-sm text-danger">{error}</p>}
-
-          <div className="mt-10 flex gap-3">
-            <button
-              type="button"
-              onClick={() => setStep(3)}
-              className="rounded-lg border border-border px-4 py-3 text-sm"
-            >
-              Atrás
-            </button>
-            {needsLogistics ? (
-              <button
-                type="button"
-                onClick={() => {
-                  if (nicheKeywords.length === 0) {
-                    setError("Agregá al menos una keyword");
-                    return;
-                  }
-                  setError(null);
-                  setStep(5);
-                }}
-                className="rounded-lg bg-accent px-6 py-3 text-sm font-medium text-white"
-              >
-                Continuar
-              </button>
-            ) : (
-              <button
-                type="button"
-                disabled={saving}
-                onClick={() => {
-                  if (
-                    goal !== "browse_ads" &&
-                    nicheKeywords.length === 0
-                  ) {
-                    setError("Agregá al menos una keyword");
-                    return;
-                  }
-                  void finish();
-                }}
-                className="rounded-lg bg-accent px-6 py-3 text-sm font-medium text-white disabled:opacity-60"
-              >
-                {saving ? "Guardando…" : "Ver anuncios"}
-              </button>
-            )}
-          </div>
-        </section>
-      )}
-
-      {step === 5 && needsLogistics && (
-        <section className="flex flex-1 flex-col">
-          <h1 className="font-display text-3xl">
-            ¿Tenés lugar para guardar stock?
-          </h1>
-          <p className="mt-2 text-muted">Opcional — nos ayuda a filtrar mejor.</p>
-          <div className="mt-6 flex flex-col gap-2">
-            {(
-              [
-                [true, "Sí"],
-                [false, "No / dropshipping"],
-              ] as const
-            ).map(([val, label]) => (
-              <button
-                key={String(val)}
-                type="button"
-                onClick={() => setHasWarehouseStorage(val)}
-                className={`rounded-xl border px-4 py-4 text-left ${
-                  hasWarehouseStorage === val
-                    ? "border-accent bg-surface"
-                    : "border-border bg-surface"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          {error && <p className="mt-4 text-sm text-danger">{error}</p>}
-          <div className="mt-10 flex gap-3">
-            <button
-              type="button"
-              onClick={() => setStep(4)}
-              className="rounded-lg border border-border px-4 py-3 text-sm"
-            >
-              Atrás
-            </button>
-            <button
-              type="button"
+              className="flex-1"
               disabled={saving}
-              onClick={() => void finish()}
-              className="rounded-lg bg-accent px-6 py-3 text-sm font-medium text-white disabled:opacity-60"
+              onClick={() => {
+                if (goal !== "browse_ads" && nicheKeywords.length === 0) {
+                  setError("Agregá al menos una keyword");
+                  return;
+                }
+                void finish();
+              }}
             >
-              {saving ? "Guardando…" : "Ver anuncios"}
-            </button>
-          </div>
-        </section>
-      )}
+              {saving ? "Guardando…" : "Finalizar"}
+              <ChevronRight className="size-3.5" />
+            </Button>
+          )}
+        </div>
+      </Card>
     </main>
   );
 }

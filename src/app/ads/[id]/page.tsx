@@ -3,11 +3,15 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useQuery } from "convex/react";
+import { ArrowLeft, ExternalLink } from "lucide-react";
 import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
 import { AppShell } from "@/components/AppShell";
 import { AdCreative } from "@/components/AdCreative";
 import { InvestigatePanel } from "@/components/InvestigatePanel";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 
 export default function AdDetailPage() {
   const params = useParams();
@@ -16,66 +20,82 @@ export default function AdDetailPage() {
 
   return (
     <AppShell>
-      <Link href="/ads" className="text-sm text-muted hover:text-foreground">
-        ← Anuncios
-      </Link>
+      <Button
+        variant="ghost"
+        className="-ml-2.5 mb-4"
+        render={<Link href="/ads" />}
+      >
+        <ArrowLeft className="size-3.5" />
+        Volver al Explorador
+      </Button>
 
       {ad === undefined && (
-        <p className="mt-6 text-muted">Cargando…</p>
+        <p className="mt-6 text-muted-foreground">Cargando…</p>
       )}
 
       {ad === null && (
-        <p className="mt-6 text-muted">No encontramos este anuncio.</p>
+        <p className="mt-6 text-muted-foreground">
+          No encontramos este anuncio.
+        </p>
       )}
 
       {ad && (
-        <article className="mt-6 grid gap-6 md:grid-cols-2">
-          <AdCreative
-            imageUrl={ad.mediaUrls[0]}
-            videoUrl={ad.videoUrl}
-            controls
-            className="aspect-[4/5] w-full overflow-hidden rounded-xl border border-border"
-          />
+        <article className="grid gap-6 md:grid-cols-2">
+          <Card className="overflow-hidden p-0">
+            <AdCreative
+              imageUrl={ad.mediaUrls[0]}
+              videoUrl={ad.videoUrl}
+              controls
+              className="aspect-[4/5] w-full"
+            />
+          </Card>
           <div>
-            <h1 className="font-display text-2xl">{ad.pageName}</h1>
-            <p className="mt-2 text-sm text-muted">
-              {ad.isActive ? "Activo" : "Inactivo"}
-              {ad.activeDays != null && ad.activeDays > 0
-                ? ` · ${ad.activeDays} días activos`
-                : ""}
-            </p>
+            <h1 className="text-2xl">{ad.pageName}</h1>
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              <Badge variant={ad.isActive ? "default" : "secondary"}>
+                {ad.isActive ? "Activo" : "Inactivo"}
+              </Badge>
+              {ad.activeDays != null && ad.activeDays > 0 && (
+                <Badge variant="outline">{ad.activeDays} días activos</Badge>
+              )}
+              {ad.platforms.map((p) => (
+                <Badge key={p} variant="outline">
+                  {p}
+                </Badge>
+              ))}
+            </div>
+
             {ad.body && (
-              <p className="mt-4 whitespace-pre-wrap text-foreground">
+              <p className="mt-5 whitespace-pre-wrap text-foreground">
                 {ad.body}
               </p>
             )}
             {ad.cta && (
-              <p className="mt-3 text-sm text-muted">CTA: {ad.cta}</p>
+              <p className="mt-3 text-sm text-muted-foreground">
+                CTA: <span className="text-foreground">{ad.cta}</span>
+              </p>
             )}
+
             <div className="mt-6 flex flex-wrap gap-3">
               {ad.destinationUrl && (
-                <a
-                  href={ad.destinationUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white"
-                >
+                <Button render={<a href={ad.destinationUrl} target="_blank" rel="noreferrer" />}>
                   Ver destino
-                </a>
+                  <ExternalLink className="size-3.5" />
+                </Button>
               )}
               {ad.snapshotUrl && (
-                <a
-                  href={ad.snapshotUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="rounded-lg border border-border bg-surface px-4 py-2 text-sm"
+                <Button
+                  variant="secondary"
+                  render={<a href={ad.snapshotUrl} target="_blank" rel="noreferrer" />}
                 >
                   Ver en Meta
-                </a>
+                  <ExternalLink className="size-3.5" />
+                </Button>
               )}
             </div>
+
             {ad.searchTerm && (
-              <p className="mt-6 text-xs text-muted">
+              <p className="mt-6 text-xs text-muted-foreground">
                 Encontrado con: {ad.searchTerm}
               </p>
             )}

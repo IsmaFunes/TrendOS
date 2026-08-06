@@ -5,6 +5,9 @@
 
 export type FetchJsonOptions = {
   url: string;
+  /** @default "GET" */
+  method?: string;
+  body?: string;
   headers?: Record<string, string>;
   timeoutMs?: number;
   maxAttempts?: number;
@@ -43,6 +46,8 @@ export async function fetchJsonWithRetry<T>(
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const res = await fetch(options.url, {
+        method: options.method,
+        body: options.body,
         headers: options.headers,
         signal: controller.signal,
       });

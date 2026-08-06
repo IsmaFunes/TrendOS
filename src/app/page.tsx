@@ -1,66 +1,50 @@
 import Link from "next/link";
 import { Show, SignInButton, UserButton } from "@clerk/nextjs";
+import { Button } from "@/components/ui/button";
+import { BrandLogo } from "@/components/BrandLogo";
 
 export default function HomePage() {
   return (
     <main className="relative flex flex-1 flex-col">
       <header className="mx-auto flex w-full max-w-5xl items-center justify-between px-6 py-5">
-        <span className="font-display text-xl text-foreground">TrendOS</span>
+        <BrandLogo />
         <nav className="flex items-center gap-3">
           <Show when="signed-out">
             <SignInButton mode="modal">
-              <button className="rounded-lg border border-border bg-surface px-4 py-2 text-sm text-foreground">
-                Entrar
-              </button>
+              <Button variant="secondary">Entrar</Button>
             </SignInButton>
-            <Link
-              href="/sign-up"
-              className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white"
-            >
-              Crear cuenta
-            </Link>
+            <Button render={<Link href="/sign-up" />}>Crear cuenta</Button>
           </Show>
           <Show when="signed-in">
-            <Link
-              href="/ads"
-              className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white"
-            >
+            <Button variant="secondary" render={<Link href="/ads" />}>
               Anuncios
-            </Link>
+            </Button>
             <UserButton />
           </Show>
         </nav>
       </header>
 
-      <section className="mx-auto flex w-full max-w-5xl flex-1 flex-col justify-center px-6 pb-20 pt-10">
-        <h1 className="font-display max-w-2xl text-4xl leading-tight text-foreground md:text-5xl">
+      <section className="mx-auto flex w-full max-w-5xl flex-1 flex-col justify-center px-6 pt-10 pb-20">
+        <h1 className="max-w-2xl text-4xl leading-tight text-foreground md:text-5xl">
           Encontrá productos que ya se están anunciando en Argentina
         </h1>
-        <p className="mt-4 max-w-lg text-lg text-muted">
-          Miramos anuncios de Meta que están activos hoy. Vos elegís qué vender.
+        <p className="mt-4 max-w-lg text-lg text-muted-foreground">
+          Miramos anuncios de Meta que están activos hoy. Vos elegís qué
+          vender.
         </p>
         <div className="mt-8 flex flex-wrap gap-3">
           <Show when="signed-out">
-            <Link
-              href="/sign-up"
-              className="rounded-lg bg-accent px-6 py-3 text-base font-medium text-white"
-            >
+            <Button size="lg" render={<Link href="/sign-up" />}>
               Empezar
-            </Link>
+            </Button>
           </Show>
           <Show when="signed-in">
-            <Link
-              href="/onboarding"
-              className="rounded-lg bg-accent px-6 py-3 text-base font-medium text-white"
-            >
+            <Button size="lg" render={<Link href="/onboarding" />}>
               Continuar
-            </Link>
-            <Link
-              href="/ads"
-              className="rounded-lg border border-border bg-surface px-6 py-3 text-base text-foreground"
-            >
+            </Button>
+            <Button size="lg" variant="secondary" render={<Link href="/ads" />}>
               Ver anuncios
-            </Link>
+            </Button>
           </Show>
         </div>
       </section>
