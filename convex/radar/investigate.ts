@@ -334,6 +334,8 @@ export function computeInvestigationScore(
 }
 
 export type SupplierOffer = {
+  /** The specific product title the offer is for — lets users verify relevance. */
+  title: string;
   supplierName?: string;
   country: SupplierCountry;
   isImport: boolean;
@@ -344,6 +346,22 @@ export type SupplierOffer = {
   url?: string;
   source: string;
 };
+
+/** Minimum title-vs-query similarity to keep a supplier offer. */
+const SUPPLIER_MIN_MATCH = 0.12;
+
+/**
+ * Cheap defense against unrelated supplier results (a China B2B scrape or
+ * an LLM search returning something in the same general category but not
+ * the actual product) — drop anything whose real title doesn't overlap
+ * with what we're actually sourcing.
+ */
+export function isRelevantSupplierTitle(
+  referenceQuery: string,
+  title: string,
+): boolean {
+  return textSimilarity(referenceQuery, title) >= SUPPLIER_MIN_MATCH;
+}
 
 export type ProfitEstimate = {
   bestSupplierPrice?: number;
@@ -520,17 +538,18 @@ async function callGeminiJsonLocal(prompt: string): Promise<string> {
 async function refineProductSignalWithGemini(
   pageName: string,
   body: string,
-): Promise<{ productName: string; searchQuery: string } | null> {
+): Promise<{ productName: string; searchQuery: string; englishQuery: string } | null> {
   const prompt = `Extraé el nombre de producto físico concreto que se anuncia en este anuncio de Meta (Facebook/Instagram) de Argentina. Ignorá ganchos de oferta (envío gratis, cuotas, 2x1) y el nombre de la tienda.
 
 Página: ${pageName}
 Texto del anuncio: ${body.slice(0, 500)}
 
-Respondé SOLO JSON: {"productName":"Nombre corto y concreto","searchQuery":"3 a 6 palabras para buscar en un marketplace"}`;
+Respondé SOLO JSON: {"productName":"Nombre corto y concreto en español","searchQuery":"3 a 6 palabras en español para buscar en un marketplace","englishQuery":"la misma búsqueda pero en inglés, para mayoristas B2B como Alibaba"}`;
   const text = await callGeminiJsonLocal(prompt);
   const parsed = JSON.parse(text) as {
     productName?: unknown;
     searchQuery?: unknown;
+    englishQuery?: unknown;
   };
   const productName =
     typeof parsed.productName === "string"
@@ -540,8 +559,12 @@ Respondé SOLO JSON: {"productName":"Nombre corto y concreto","searchQuery":"3 a
     typeof parsed.searchQuery === "string"
       ? parsed.searchQuery.trim().slice(0, 80)
       : "";
+  const englishQuery =
+    typeof parsed.englishQuery === "string"
+      ? parsed.englishQuery.trim().slice(0, 80)
+      : "";
   if (!productName || !searchQuery) return null;
-  return { productName, searchQuery };
+  return { productName, searchQuery, englishQuery: englishQuery || searchQuery };
 }
 
 function isDisplayableCandidate(ad: {
@@ -795,6 +818,10 @@ export const investigateAd = action({
     const warnings: string[] = [];
     let productName = context.productName;
     let searchQuery = context.searchQuery;
+    // English search phrase for China B2B sites (Alibaba/Made-in-China are
+    // English-first — searching them in Spanish returns near-random noise).
+    // Falls back to the Spanish query when Gemini isn't available/fails.
+    let englishQuery = context.searchQuery;
 
     if (process.env.GEMINI_API_KEY?.trim()) {
       try {
@@ -805,6 +832,7 @@ export const investigateAd = action({
         if (refined) {
           productName = refined.productName;
           searchQuery = refined.searchQuery;
+          englishQuery = refined.englishQuery;
         }
       } catch {
         // Heuristic productName/searchQuery from the context query stays.
@@ -875,8 +903,10 @@ export const investigateAd = action({
 
     const [micResult, aliResult, geminiSuppliers, dolarResult] =
       await Promise.allSettled([
-        searchMadeInChina(searchQuery, { limit: 2 }),
-        searchAlibaba(searchQuery, { limit: 2 }),
+        // Fetch more than we need — relevance filtering below drops the
+        // ones that don't actually match the product.
+        searchMadeInChina(englishQuery, { limit: 5 }),
+        searchAlibaba(englishQuery, { limit: 5 }),
         geminiEnabled
           ? researchSuppliersForProduct({
               productName,
@@ -886,11 +916,15 @@ export const investigateAd = action({
         fetchBlueDolarRate(),
       ]);
 
-    const suppliers: SupplierOffer[] = [];
+    const suppliersRaw: SupplierOffer[] = [];
+    let chinaCandidateCount = 0;
     if (micResult.status === "fulfilled") {
       for (const item of micResult.value.items) {
+        chinaCandidateCount += 1;
         if (item.price == null) continue;
-        suppliers.push({
+        if (!isRelevantSupplierTitle(englishQuery, item.title)) continue;
+        suppliersRaw.push({
+          title: item.title,
           supplierName: item.sellerName,
           country: "CN",
           isImport: true,
@@ -904,8 +938,11 @@ export const investigateAd = action({
     }
     if (aliResult.status === "fulfilled") {
       for (const item of aliResult.value.items) {
+        chinaCandidateCount += 1;
         if (item.price == null) continue;
-        suppliers.push({
+        if (!isRelevantSupplierTitle(englishQuery, item.title)) continue;
+        suppliersRaw.push({
+          title: item.title,
           supplierName: item.sellerName,
           country: "CN",
           isImport: true,
@@ -917,9 +954,19 @@ export const investigateAd = action({
         });
       }
     }
+    if (chinaCandidateCount > 0 && suppliersRaw.length === 0) {
+      warnings.push(
+        "Encontramos ofertas en China pero ninguna coincidía con el producto — descartadas.",
+      );
+    }
     if (geminiSuppliers.status === "fulfilled") {
       for (const s of geminiSuppliers.value) {
-        suppliers.push({
+        // Gemini is already instructed to match the exact product, but
+        // this is a second, independent check against the same bar the
+        // other sources have to clear.
+        if (!isRelevantSupplierTitle(productName, s.title)) continue;
+        suppliersRaw.push({
+          title: s.title,
           supplierName: s.supplierName,
           country: s.country,
           isImport: s.country !== "AR",
@@ -935,7 +982,7 @@ export const investigateAd = action({
       warnings.push("Gemini: no se pudieron buscar proveedores");
     }
 
-    const suppliersFinal = capSuppliersByCountry(suppliers, 2, 6);
+    const suppliersFinal = capSuppliersByCountry(suppliersRaw, 2, 6);
     if (suppliersFinal.length === 0) {
       warnings.push("No encontramos proveedores verificables para este producto.");
     }

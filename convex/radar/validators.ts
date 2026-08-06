@@ -257,6 +257,8 @@ export const mlMatchResultValidator = v.object({
 });
 
 export const supplierOfferValidator = v.object({
+  /** The specific product title the offer is for — lets users verify relevance. */
+  title: v.string(),
   supplierName: v.optional(v.string()),
   country: supplierCountryValidator,
   isImport: v.boolean(),

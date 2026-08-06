@@ -284,40 +284,40 @@ export function InvestigatePanel({ adId }: InvestigatePanelProps) {
             ) : (
               <div className="mt-3 space-y-2">
                 {investigation.suppliers.map((s, idx) => (
-                  <Card
-                    key={`${s.source}_${idx}`}
-                    className="flex-row flex-wrap items-center justify-between gap-2 p-3"
-                  >
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Badge variant="outline">{COUNTRY_LABEL[s.country] ?? s.country}</Badge>
-                      <Badge variant={s.isImport ? "secondary" : "default"}>
-                        {s.isImport ? "Importado" : "Nacional"}
-                      </Badge>
-                      <span className="text-sm font-medium">
-                        {formatMoney(s.unitPrice, s.currency)}
-                      </span>
-                      {s.moq != null && (
-                        <span className="text-xs text-muted-foreground">MOQ {s.moq}</span>
-                      )}
-                      {s.leadTimeDays != null && (
-                        <span className="text-xs text-muted-foreground">
-                          {s.leadTimeDays}d entrega
+                  <Card key={`${s.source}_${idx}`} className="gap-2 p-3">
+                    <p className="text-[13px] font-medium">{s.title}</p>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge variant="outline">{COUNTRY_LABEL[s.country] ?? s.country}</Badge>
+                        <Badge variant={s.isImport ? "secondary" : "default"}>
+                          {s.isImport ? "Importado" : "Nacional"}
+                        </Badge>
+                        <span className="text-sm font-medium">
+                          {formatMoney(s.unitPrice, s.currency)}
                         </span>
-                      )}
-                      {s.supplierName && (
-                        <span className="text-xs text-muted-foreground">{s.supplierName}</span>
+                        {s.moq != null && (
+                          <span className="text-xs text-muted-foreground">MOQ {s.moq}</span>
+                        )}
+                        {s.leadTimeDays != null && (
+                          <span className="text-xs text-muted-foreground">
+                            {s.leadTimeDays}d entrega
+                          </span>
+                        )}
+                        {s.supplierName && (
+                          <span className="text-xs text-muted-foreground">{s.supplierName}</span>
+                        )}
+                      </div>
+                      {s.url && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          render={<a href={s.url} target="_blank" rel="noreferrer" />}
+                        >
+                          Ver oferta
+                          <ExternalLink className="size-3" />
+                        </Button>
                       )}
                     </div>
-                    {s.url && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        render={<a href={s.url} target="_blank" rel="noreferrer" />}
-                      >
-                        Ver oferta
-                        <ExternalLink className="size-3" />
-                      </Button>
-                    )}
                   </Card>
                 ))}
               </div>

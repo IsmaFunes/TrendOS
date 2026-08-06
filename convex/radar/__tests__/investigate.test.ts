@@ -4,6 +4,7 @@ import {
   capSuppliersByCountry,
   computeInvestigationScore,
   computeProfitEstimate,
+  isRelevantSupplierTitle,
   rankMlMatches,
   rankSimilarAds,
   scoreStoreQuality,
@@ -215,6 +216,7 @@ describe("computeProfitEstimate", () => {
   it("computes a direct margin for an ARS-priced local supplier", () => {
     const suppliers: SupplierOffer[] = [
       {
+        title: "Termo Acero Inoxidable 1L",
         country: "AR",
         isImport: false,
         unitPrice: 8_000,
@@ -233,7 +235,14 @@ describe("computeProfitEstimate", () => {
 
   it("converts a USD supplier when a blue-dollar FX rate is available", () => {
     const suppliers: SupplierOffer[] = [
-      { country: "CN", isImport: true, unitPrice: 5, currency: "USD", source: "alibaba" },
+      {
+        title: "Stainless Steel Thermos 1L",
+        country: "CN",
+        isImport: true,
+        unitPrice: 5,
+        currency: "USD",
+        source: "alibaba",
+      },
     ];
     const profit = computeProfitEstimate({
       suppliers,
@@ -248,7 +257,14 @@ describe("computeProfitEstimate", () => {
 
   it("skips the margin (but keeps the raw price) when currency can't be converted", () => {
     const suppliers: SupplierOffer[] = [
-      { country: "CN", isImport: true, unitPrice: 5, currency: "USD", source: "alibaba" },
+      {
+        title: "Stainless Steel Thermos 1L",
+        country: "CN",
+        isImport: true,
+        unitPrice: 5,
+        currency: "USD",
+        source: "alibaba",
+      },
     ];
     const profit = computeProfitEstimate({ suppliers, estimatedSalePrice: 15_000 });
     expect(profit?.estimatedMargin).toBeUndefined();
@@ -258,7 +274,14 @@ describe("computeProfitEstimate", () => {
 
   it("skips the margin when there is no ML reference price", () => {
     const suppliers: SupplierOffer[] = [
-      { country: "AR", isImport: false, unitPrice: 8_000, currency: "ARS", source: "gemini_research" },
+      {
+        title: "Termo Acero Inoxidable 1L",
+        country: "AR",
+        isImport: false,
+        unitPrice: 8_000,
+        currency: "ARS",
+        source: "gemini_research",
+      },
     ];
     const profit = computeProfitEstimate({ suppliers, estimatedSalePrice: null });
     expect(profit?.estimatedMargin).toBeUndefined();
@@ -269,15 +292,32 @@ describe("computeProfitEstimate", () => {
 describe("capSuppliersByCountry", () => {
   it("caps per-country and overall totals, keeping the cheapest first", () => {
     const suppliers: SupplierOffer[] = [
-      { country: "CN", isImport: true, unitPrice: 9, currency: "USD", source: "alibaba" },
-      { country: "CN", isImport: true, unitPrice: 3, currency: "USD", source: "made_in_china" },
-      { country: "CN", isImport: true, unitPrice: 6, currency: "USD", source: "made_in_china" },
-      { country: "AR", isImport: false, unitPrice: 8_000, currency: "ARS", source: "gemini_research" },
-      { country: "BR", isImport: true, unitPrice: 20, currency: "BRL", source: "gemini_research" },
+      { title: "Thermos A", country: "CN", isImport: true, unitPrice: 9, currency: "USD", source: "alibaba" },
+      { title: "Thermos B", country: "CN", isImport: true, unitPrice: 3, currency: "USD", source: "made_in_china" },
+      { title: "Thermos C", country: "CN", isImport: true, unitPrice: 6, currency: "USD", source: "made_in_china" },
+      { title: "Termo D", country: "AR", isImport: false, unitPrice: 8_000, currency: "ARS", source: "gemini_research" },
+      { title: "Termo E", country: "BR", isImport: true, unitPrice: 20, currency: "BRL", source: "gemini_research" },
     ];
     const capped = capSuppliersByCountry(suppliers, 2, 3);
     expect(capped).toHaveLength(3);
     expect(capped.filter((s) => s.country === "CN")).toHaveLength(2);
     expect(capped[0]!.unitPrice).toBe(3);
+  });
+});
+
+describe("isRelevantSupplierTitle", () => {
+  it("keeps a title that overlaps with the query", () => {
+    expect(
+      isRelevantSupplierTitle(
+        "stainless steel thermos 1l",
+        "2024 New Design Stainless Steel Vacuum Flask Thermos Bottle 1000ml Wholesale",
+      ),
+    ).toBe(true);
+  });
+
+  it("drops a title from a different, unrelated product", () => {
+    expect(
+      isRelevantSupplierTitle("stainless steel thermos 1l", "Wireless Bluetooth Earbuds Case"),
+    ).toBe(false);
   });
 });
