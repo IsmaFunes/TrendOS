@@ -146,6 +146,13 @@ describe("rankMlMatches", () => {
     ]);
     expect(warning).toBeTruthy();
   });
+
+  it("carries the item's source through so the UI can flag web-search fallback results", () => {
+    const { matches } = rankMlMatches("termo acero inoxidable 1l", [
+      item({ externalId: "D", source: "gemini_research" }),
+    ]);
+    expect(matches[0]!.source).toBe("gemini_research");
+  });
 });
 
 describe("computeInvestigationScore", () => {

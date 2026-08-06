@@ -698,3 +698,114 @@ Campos obligatorios: country (AR|CN|BR), price, url. moq/leadTimeDays/currency o
   }
   return parsed;
 }
+
+// ─── Investigate: MercadoLibre listing fallback ───────────────────────
+// Mercado Libre restricts /sites/{site}/search and /products/search to
+// third-party apps without individually-approved "Product Partner"
+// access — most apps get a policy-level 403 regardless of token validity.
+// This is a Google-Search-grounded fallback for when that's the case.
+
+export type MercadoLibreListingCandidate = {
+  title: string;
+  url: string;
+  price: number;
+  currency: string;
+  imageUrl?: string;
+  sellerName?: string;
+  condition?: string;
+};
+
+const ML_LISTING_URL_RE =
+  /^https:\/\/(www\.|articulo\.)?mercadolibre\.com\.ar\//i;
+
+function parseMlListingsJson(text: string): MercadoLibreListingCandidate[] | null {
+  if (!text) return null;
+  const cleaned = text
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+  let data: unknown;
+  try {
+    data = JSON.parse(cleaned.slice(start, end + 1)) as unknown;
+  } catch {
+    return null;
+  }
+  if (typeof data !== "object" || data === null || !("listings" in data)) {
+    return null;
+  }
+  const raw = (data as { listings?: unknown }).listings;
+  if (!Array.isArray(raw)) return null;
+
+  const out: MercadoLibreListingCandidate[] = [];
+  for (const item of raw) {
+    if (typeof item !== "object" || item === null) continue;
+    const row = item as Record<string, unknown>;
+    const title = typeof row.title === "string" ? row.title.trim() : "";
+    const url = typeof row.url === "string" ? row.url.trim() : "";
+    const price = asPositiveNumber(row.price);
+    // Only accept URLs that are actually MercadoLibre Argentina listing
+    // pages — Gemini occasionally hallucinates a generic/wrong domain.
+    if (!title || !url || price == null || !ML_LISTING_URL_RE.test(url)) {
+      continue;
+    }
+    const imageRaw = typeof row.img === "string" ? row.img.trim() : "";
+    const imageUrl =
+      imageRaw && (imageRaw.startsWith("http://") || imageRaw.startsWith("https://"))
+        ? imageRaw.slice(0, 500)
+        : undefined;
+    out.push({
+      title: title.slice(0, 200),
+      url: url.slice(0, 500),
+      price,
+      currency: asCurrencyCode(row.currency, "ARS"),
+      imageUrl,
+      sellerName:
+        typeof row.seller === "string" ? row.seller.slice(0, 80) : undefined,
+      condition:
+        typeof row.condition === "string" ? row.condition.slice(0, 20) : undefined,
+    });
+  }
+  return out;
+}
+
+/**
+ * Find real, active MercadoLibre Argentina listings for a concrete product
+ * via Google Search grounding — used when the official ML search API
+ * returns a policy 403. Fail-closed without GEMINI_API_KEY; never invents
+ * a listing, price, or URL.
+ */
+export async function researchMercadoLibreListings(input: {
+  productName: string;
+  maxResults?: number;
+}): Promise<MercadoLibreListingCandidate[]> {
+  const apiKey = requireGeminiApiKey();
+  const max = input.maxResults ?? 5;
+
+  const prompt = `Sos un buscador de publicaciones en MercadoLibre Argentina (mercadolibre.com.ar).
+
+Usá Google Search para encontrar publicaciones REALES y actualmente activas en
+MercadoLibre Argentina para: "${input.productName}".
+
+Reglas:
+- La URL debe ser una ficha de producto real de mercadolibre.com.ar (empieza con
+  "https://articulo.mercadolibre.com.ar/" o "https://www.mercadolibre.com.ar/").
+- Precio en ARS, numérico, tal como figura en la publicación — nunca lo inventes.
+- NO inventes publicaciones, precios ni URLs. Si no encontrás nada confiable,
+  devolvé la lista vacía.
+- Máximo ${max} resultados, priorizando las publicaciones más relevantes.
+
+Respondé SOLO JSON válido (sin markdown):
+{"listings":[{"title":"Nombre del producto","url":"https://articulo.mercadolibre.com.ar/...","price":24900,"img":"https://...jpg","seller":"Nombre tienda","condition":"new"}]}`;
+
+  const { text, finishReason } = await callGeminiWithSearch(apiKey, prompt);
+  const parsed = parseMlListingsJson(text);
+  if (!parsed) {
+    throw new Error(
+      `Gemini ML listing search unparseable${finishReason ? ` (${finishReason})` : ""}`,
+    );
+  }
+  return parsed.slice(0, max);
+}
