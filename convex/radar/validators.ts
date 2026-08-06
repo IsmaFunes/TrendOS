@@ -275,6 +275,10 @@ export const profitEstimateValidator = v.object({
   estimatedProfit: v.optional(v.number()),
   estimatedMargin: v.optional(v.number()),
   platformFeeRate: v.optional(v.number()),
+  /** FX rate actually used to convert the supplier's cost into ARS, if any. */
+  fxRateUsed: v.optional(v.number()),
+  /** Where fxRateUsed came from, e.g. "blue (dolarapi.com)". */
+  fxRateSource: v.optional(v.string()),
   isEstimated: v.boolean(),
   note: v.optional(v.string()),
 });

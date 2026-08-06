@@ -224,17 +224,19 @@ describe("computeProfitEstimate", () => {
     expect(profit?.bestSupplierCountry).toBe("AR");
   });
 
-  it("converts a USD supplier when an FX rate is configured", () => {
+  it("converts a USD supplier when a blue-dollar FX rate is available", () => {
     const suppliers: SupplierOffer[] = [
       { country: "CN", isImport: true, unitPrice: 5, currency: "USD", source: "alibaba" },
     ];
     const profit = computeProfitEstimate({
       suppliers,
       estimatedSalePrice: 15_000,
-      fxUsdArs: 1000,
+      fxUsdArs: { rate: 1000, source: "blue (dolarapi.com)" },
     });
     expect(profit?.estimatedMargin).not.toBeUndefined();
     expect(profit?.estimatedProfit).toBeCloseTo(15_000 - 5_000 - 15_000 * 0.13, 0);
+    expect(profit?.fxRateUsed).toBe(1000);
+    expect(profit?.fxRateSource).toBe("blue (dolarapi.com)");
   });
 
   it("skips the margin (but keeps the raw price) when currency can't be converted", () => {

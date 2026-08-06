@@ -189,8 +189,14 @@ export function InvestigatePanel({ adId }: InvestigatePanelProps) {
                   No encontramos proveedores para estimar ganancia.
                 </p>
               )}
+              {investigation.profit?.fxRateUsed != null && (
+                <p className="mt-3 text-xs text-muted">
+                  Dólar {investigation.profit.fxRateSource ?? "estimado"}:{" "}
+                  {formatArs(investigation.profit.fxRateUsed)}
+                </p>
+              )}
               {investigation.profit?.note && (
-                <p className="mt-3 text-xs text-muted">{investigation.profit.note}</p>
+                <p className="mt-1 text-xs text-muted">{investigation.profit.note}</p>
               )}
             </div>
           </div>

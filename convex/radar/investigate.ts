@@ -27,6 +27,10 @@ import { createMercadoLibreProvider } from "./providers/mercadolibre";
 import { resolveMercadoLibreAccessToken } from "./providers/mlAuth";
 import { searchAlibaba, searchMadeInChina } from "./providers/chinaB2b";
 import {
+  DOLAR_API_SOURCE_LABEL,
+  fetchBlueDolarRate,
+} from "./providers/dolarApi";
+import {
   researchSuppliersForProduct,
   type SupplierCandidate,
 } from "./providers/geminiResearch";
@@ -345,40 +349,50 @@ export type ProfitEstimate = {
   estimatedProfit?: number;
   estimatedMargin?: number;
   platformFeeRate?: number;
+  fxRateUsed?: number;
+  fxRateSource?: string;
   isEstimated: boolean;
   note?: string;
 };
 
+type FxRate = { rate: number; source: string } | null;
+
 function convertToArs(
   price: number,
   currency: string,
-  fxUsdArs?: number | null,
-  fxBrlArs?: number | null,
-): number | null {
-  if (currency === "ARS") return price;
-  if (currency === "USD" && fxUsdArs) return price * fxUsdArs;
-  if (currency === "BRL" && fxBrlArs) return price * fxBrlArs;
+  fxUsdArs?: FxRate,
+  fxBrlArs?: FxRate,
+): { arsCost: number; fx: FxRate } | null {
+  if (currency === "ARS") return { arsCost: price, fx: null };
+  if (currency === "USD" && fxUsdArs) {
+    return { arsCost: price * fxUsdArs.rate, fx: fxUsdArs };
+  }
+  if (currency === "BRL" && fxBrlArs) {
+    return { arsCost: price * fxBrlArs.rate, fx: fxBrlArs };
+  }
   return null;
 }
 
 export function computeProfitEstimate(input: {
   suppliers: SupplierOffer[];
   estimatedSalePrice: number | null;
-  fxUsdArs?: number | null;
-  fxBrlArs?: number | null;
+  fxUsdArs?: FxRate;
+  fxBrlArs?: FxRate;
 }): ProfitEstimate | undefined {
   if (input.suppliers.length === 0) return undefined;
 
-  let best: { supplier: SupplierOffer; arsCost: number } | null = null;
+  let best: { supplier: SupplierOffer; arsCost: number; fx: FxRate } | null = null;
   for (const s of input.suppliers) {
-    const arsCost = convertToArs(
+    const converted = convertToArs(
       s.unitPrice,
       s.currency,
       input.fxUsdArs,
       input.fxBrlArs,
     );
-    if (arsCost == null) continue;
-    if (!best || arsCost < best.arsCost) best = { supplier: s, arsCost };
+    if (converted == null) continue;
+    if (!best || converted.arsCost < best.arsCost) {
+      best = { supplier: s, arsCost: converted.arsCost, fx: converted.fx };
+    }
   }
 
   if (!best) {
@@ -392,7 +406,7 @@ export function computeProfitEstimate(input: {
       estimatedSalePrice: input.estimatedSalePrice ?? undefined,
       estimatedSaleCurrency: input.estimatedSalePrice != null ? "ARS" : undefined,
       isEstimated: true,
-      note: "No pudimos convertir el costo a ARS (configurá TREND_RADAR_USD_ARS_RATE / TREND_RADAR_BRL_ARS_RATE) — margen no calculado.",
+      note: "No pudimos obtener un tipo de cambio para convertir el costo a ARS — margen no calculado.",
     };
   }
 
@@ -401,6 +415,8 @@ export function computeProfitEstimate(input: {
       bestSupplierPrice: best.supplier.unitPrice,
       bestSupplierCurrency: best.supplier.currency,
       bestSupplierCountry: best.supplier.country,
+      fxRateUsed: best.fx?.rate,
+      fxRateSource: best.fx?.source,
       isEstimated: true,
       note: "Sin precio de referencia en MercadoLibre — no se pudo estimar margen.",
     };
@@ -421,11 +437,13 @@ export function computeProfitEstimate(input: {
     estimatedProfit: margin.estimatedProfit ?? undefined,
     estimatedMargin: margin.estimatedMargin ?? undefined,
     platformFeeRate: ESTIMATED_ML_PLATFORM_FEE_RATE,
+    fxRateUsed: best.fx?.rate,
+    fxRateSource: best.fx?.source,
     isEstimated: true,
     note:
       best.supplier.country === "AR"
         ? "Estimado: no incluye flete local ni impuestos."
-        : "Estimado con tipo de cambio configurado; no incluye flete de importación ni impuestos.",
+        : "Estimado con el tipo de cambio indicado; no incluye flete de importación ni impuestos.",
   };
 }
 
@@ -819,16 +837,18 @@ export const investigateAd = action({
     if (mlWarning) warnings.push(mlWarning);
 
     const geminiEnabled = Boolean(process.env.GEMINI_API_KEY?.trim());
-    const [micResult, aliResult, geminiSuppliers] = await Promise.allSettled([
-      searchMadeInChina(searchQuery, { limit: 2 }),
-      searchAlibaba(searchQuery, { limit: 2 }),
-      geminiEnabled
-        ? researchSuppliersForProduct({
-            productName,
-            niche: (context.profile.nicheKeywords ?? []).join(", "),
-          })
-        : Promise.resolve<SupplierCandidate[]>([]),
-    ]);
+    const [micResult, aliResult, geminiSuppliers, dolarResult] =
+      await Promise.allSettled([
+        searchMadeInChina(searchQuery, { limit: 2 }),
+        searchAlibaba(searchQuery, { limit: 2 }),
+        geminiEnabled
+          ? researchSuppliersForProduct({
+              productName,
+              niche: (context.profile.nicheKeywords ?? []).join(", "),
+            })
+          : Promise.resolve<SupplierCandidate[]>([]),
+        fetchBlueDolarRate(),
+      ]);
 
     const suppliers: SupplierOffer[] = [];
     if (micResult.status === "fulfilled") {
@@ -889,11 +909,20 @@ export const investigateAd = action({
       bestMl && (bestMl.currency === "ARS" || bestMl.currency == null)
         ? bestMl.price ?? null
         : null;
+    const blueRate =
+      dolarResult.status === "fulfilled" ? dolarResult.value : null;
+    const hasUsdSupplier = suppliersFinal.some((s) => s.currency === "USD");
+    if (hasUsdSupplier && blueRate == null) {
+      warnings.push(
+        "No pudimos obtener la cotización del dólar blue (dolarapi.com) — el margen para proveedores en USD no se pudo calcular.",
+      );
+    }
+    const brlRate = numFromEnv("TREND_RADAR_BRL_ARS_RATE");
     const profit = computeProfitEstimate({
       suppliers: suppliersFinal,
       estimatedSalePrice,
-      fxUsdArs: numFromEnv("TREND_RADAR_USD_ARS_RATE"),
-      fxBrlArs: numFromEnv("TREND_RADAR_BRL_ARS_RATE"),
+      fxUsdArs: blueRate != null ? { rate: blueRate, source: DOLAR_API_SOURCE_LABEL } : null,
+      fxBrlArs: brlRate != null ? { rate: brlRate, source: "TREND_RADAR_BRL_ARS_RATE" } : null,
     });
 
     const nicheFitScore = nicheRelevance(productName, {

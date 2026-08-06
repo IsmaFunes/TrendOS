@@ -35,6 +35,7 @@ import type * as radar_productEvidence from "../radar/productEvidence.js";
 import type * as radar_products from "../radar/products.js";
 import type * as radar_providers_aliexpress from "../radar/providers/aliexpress.js";
 import type * as radar_providers_chinaB2b from "../radar/providers/chinaB2b.js";
+import type * as radar_providers_dolarApi from "../radar/providers/dolarApi.js";
 import type * as radar_providers_geminiResearch from "../radar/providers/geminiResearch.js";
 import type * as radar_providers_googleTrends from "../radar/providers/googleTrends.js";
 import type * as radar_providers_manualSocial from "../radar/providers/manualSocial.js";
@@ -83,6 +84,7 @@ declare const fullApi: ApiFromModules<{
   "radar/products": typeof radar_products;
   "radar/providers/aliexpress": typeof radar_providers_aliexpress;
   "radar/providers/chinaB2b": typeof radar_providers_chinaB2b;
+  "radar/providers/dolarApi": typeof radar_providers_dolarApi;
   "radar/providers/geminiResearch": typeof radar_providers_geminiResearch;
   "radar/providers/googleTrends": typeof radar_providers_googleTrends;
   "radar/providers/manualSocial": typeof radar_providers_manualSocial;
