@@ -418,7 +418,9 @@ export default defineSchema({
     claimedAt: v.optional(v.number()),
     finishedAt: v.optional(v.number()),
     error: v.optional(v.string()),
-  }).index("by_status_created", ["status", "createdAt"]),
+  })
+    .index("by_status_created", ["status", "createdAt"])
+    .index("by_niche_status", ["nicheId", "status"]),
 
   // ─── Meta Ad Library (Argentina MVP) ──────────────────────────────
 

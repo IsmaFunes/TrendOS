@@ -1,12 +1,10 @@
 import type { Metadata } from "next";
-import { DM_Sans } from "next/font/google";
+import { Inter } from "next/font/google";
 import { Providers } from "@/components/Providers";
 import "./globals.css";
+import { cn } from "@/lib/utils";
 
-const dmSans = DM_Sans({
-  variable: "--font-dm-sans",
-  subsets: ["latin"],
-});
+const inter = Inter({ subsets: ["latin"], variable: "--font-sans" });
 
 export const metadata: Metadata = {
   title: "TrendOS — Anuncios que venden en Argentina",
@@ -20,7 +18,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="es" className={`${dmSans.variable} h-full antialiased`}>
+    <html
+      lang="es"
+      className={cn("dark", "h-full", "antialiased", "font-sans", inter.variable)}
+    >
       <body className="min-h-full flex flex-col font-sans">
         <Providers>{children}</Providers>
       </body>
