@@ -13,6 +13,7 @@
 
 import { internal } from "../../_generated/api";
 import type { ActionCtx } from "../../_generated/server";
+import { structuredLog } from "../http";
 
 /** Refresh a bit before the real expiry to absorb clock skew / request latency. */
 const EXPIRY_SAFETY_MARGIN_MS = 60_000;
@@ -27,7 +28,20 @@ export async function resolveMercadoLibreAccessToken(
 
   const clientId = process.env.MERCADOLIBRE_CLIENT_ID;
   const clientSecret = process.env.MERCADOLIBRE_CLIENT_SECRET;
-  const envRefreshToken = process.env.MERCADOLIBRE_REFRESH_TOKEN;
+  // Some deployments have this saved under the misspelled
+  // MERCADO_LIBRE_REFRESH_TOKEN (underscore between MERCADO and LIBRE) —
+  // fall back to it rather than silently failing every ML search.
+  const envRefreshToken =
+    process.env.MERCADOLIBRE_REFRESH_TOKEN ??
+    process.env.MERCADO_LIBRE_REFRESH_TOKEN;
+  if (!process.env.MERCADOLIBRE_REFRESH_TOKEN && process.env.MERCADO_LIBRE_REFRESH_TOKEN) {
+    structuredLog({
+      source: "mercadolibre_auth",
+      errorType: "env_var_fallback",
+      message:
+        "Using MERCADO_LIBRE_REFRESH_TOKEN fallback — rename to MERCADOLIBRE_REFRESH_TOKEN in the deployment env.",
+    });
+  }
 
   const cached = await ctx.runQuery(internal.radar.mlToken.getCachedToken, {});
   const now = Date.now();

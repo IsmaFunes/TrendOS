@@ -119,6 +119,13 @@ export function tokenizeProductName(name: string): string[] {
   return tokens;
 }
 
+/** Drops pure-digit tokens (ad-copy price/quantity noise like "45"/"000"
+ *  from "$45.000") — unit-suffixed tokens ("1l", "45cm") are alnum and
+ *  already unaffected. */
+export function stripNumericNoiseTokens(tokens: string[]): string[] {
+  return tokens.filter((t) => !/^\d+$/.test(t));
+}
+
 export function normalizeAlias(alias: string): string {
   return tokenizeProductName(alias).join(" ");
 }

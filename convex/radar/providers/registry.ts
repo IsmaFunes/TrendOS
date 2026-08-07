@@ -206,6 +206,14 @@ export function requireGeminiApiKey(): string {
   return key;
 }
 
+export function requireSerpApiKey(): string {
+  const key = process.env.SERPAPI_API_KEY?.trim();
+  if (!key) {
+    throw new Error("SERPAPI_API_KEY is required for this source");
+  }
+  return key;
+}
+
 export function requireSerpApiTrends(): string {
   const provider = process.env.GOOGLE_TRENDS_PROVIDER?.trim().toLowerCase();
   if (provider === "mock") {

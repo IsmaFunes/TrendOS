@@ -19,13 +19,17 @@ import {
 } from "../_generated/server";
 import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
-import { textSimilarity, tokenizeProductName } from "./normalize";
+import {
+  stripNumericNoiseTokens,
+  textSimilarity,
+  tokenizeProductName,
+} from "./normalize";
 import { nicheRelevance } from "../lib/nicheProfile";
 import { calculateMargin } from "./logistics";
 import { getCurrentUserOrNull } from "../lib/auth";
-import { createMercadoLibreProvider } from "./providers/mercadolibre";
-import { resolveMercadoLibreAccessToken } from "./providers/mlAuth";
-import { searchAlibaba, searchMadeInChina } from "./providers/chinaB2b";
+import { searchMadeInChina } from "./providers/chinaB2b";
+import { searchMercadoLibreViaShopping } from "./providers/serpapiShopping";
+import { structuredLog } from "./http";
 import {
   DOLAR_API_SOURCE_LABEL,
   fetchBlueDolarRate,
@@ -84,9 +88,13 @@ export function buildHeuristicProductSignal(
   pageName: string,
   body: string,
 ): { productName: string; searchQuery: string } {
-  const tokens = tokenizeProductName(`${pageName} ${body}`);
+  const tokens = stripNumericNoiseTokens(
+    tokenizeProductName(`${pageName} ${body}`),
+  );
   const core = tokens.slice(0, 8);
-  const fallback = tokenizeProductName(pageName).join(" ");
+  const fallback = stripNumericNoiseTokens(tokenizeProductName(pageName)).join(
+    " ",
+  );
   const searchQuery = core.join(" ").trim() || fallback || "producto";
   const productName = core.length
     ? core.map((t) => t.charAt(0).toUpperCase() + t.slice(1)).join(" ")
@@ -602,7 +610,7 @@ Si SÍ es un producto físico:
 - category: rubro corto (ej. "fitness", "cocina", "mates").
 - attributes: 2-4 palabras distintivas reales del producto (material, tamaño, uso, color) mencionadas o claramente implícitas — NO ganchos de oferta.
 - searchQuery: 3-6 palabras en español para buscarlo en un marketplace, construidas con el productName + attributes.
-- englishQuery: la misma búsqueda en inglés, para mayoristas B2B como Alibaba.
+- englishQuery: la misma búsqueda en inglés, para mayoristas B2B como Made-in-China.
 
 Respondé SOLO JSON:
 {"isPhysicalProduct":true,"notAProductReason":"","productName":"...","category":"...","attributes":["...","..."],"searchQuery":"...","englishQuery":"..."}`;
@@ -671,12 +679,29 @@ export function parseExtractedProductSignal(text: string): ExtractedProductSigna
   };
 }
 
-async function extractProductSignalWithGemini(
+export async function extractProductSignalWithGemini(
   pageName: string,
   body: string,
 ): Promise<ExtractedProductSignal | null> {
-  const text = await callGeminiJsonLocal(buildExtractProductSignalPrompt(pageName, body));
-  return parseExtractedProductSignal(text);
+  const prompt = buildExtractProductSignalPrompt(pageName, body);
+  try {
+    return parseExtractedProductSignal(await callGeminiJsonLocal(prompt));
+  } catch {
+    // Single retry, no backoff — this backs an interactive click with a
+    // request timeout budget, not a batch job. A transient network blip
+    // or 429 shouldn't force the low-quality heuristic fallback if a
+    // second attempt would succeed.
+    try {
+      return parseExtractedProductSignal(await callGeminiJsonLocal(prompt));
+    } catch (err) {
+      structuredLog({
+        source: "gemini_extract_signal",
+        errorType: "extraction_failed",
+        message: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  }
 }
 
 /**
@@ -1039,8 +1064,8 @@ export const investigateAd = action({
     );
     let productName = heuristic.productName;
     let searchQuery = heuristic.searchQuery;
-    // English search phrase for China B2B sites (Alibaba/Made-in-China are
-    // English-first — searching them in Spanish returns near-random noise).
+    // English search phrase for China B2B sites (Made-in-China is
+    // English-first — searching it in Spanish returns near-random noise).
     // Falls back to the Spanish query when Gemini isn't available/fails.
     let englishQuery = heuristic.searchQuery;
 
@@ -1096,41 +1121,44 @@ export const investigateAd = action({
       return { status: "error", errorMessage: "Anuncio no encontrado" };
     }
 
-    let mlItems: ExternalProduct[] = [];
-    try {
-      let accessToken: string | undefined;
-      try {
-        accessToken = await resolveMercadoLibreAccessToken(ctx);
-      } catch {
-        accessToken = undefined;
+    // Mercado Libre's official search API is a dead end for unverified
+    // third-party apps (policy 403 regardless of credentials) — real web
+    // search replaces it entirely: SerpAPI's Google Shopping index for
+    // structured, hallucination-free prices, and Gemini's Google-Search
+    // grounding for real listing permalinks. Neither requires our server
+    // to fetch mercadolibre.com.ar directly (which bot-gates anonymous
+    // requests behind an account-verification challenge).
+    const mlItems: ExternalProduct[] = [];
+    const [shoppingResult, geminiListingsResult] = await Promise.allSettled([
+      searchMercadoLibreViaShopping(searchQuery, { limit: 10 }),
+      geminiEnabled
+        ? researchMercadoLibreListings({ productName })
+        : Promise.resolve<MercadoLibreListingCandidate[]>([]),
+    ]);
+
+    if (shoppingResult.status === "fulfilled") {
+      mlItems.push(...shoppingResult.value.items);
+      if (shoppingResult.value.items.length === 0 && shoppingResult.value.errors.length > 0) {
+        warnings.push(
+          `MercadoLibre (Google Shopping): ${shoppingResult.value.errors[0]!.message}`,
+        );
       }
-      const provider = createMercadoLibreProvider({ accessToken });
-      const result = await provider.searchProducts!({
-        query: searchQuery,
-        country: AR,
-        limit: 10,
-      });
-      mlItems = result.items;
-      if (result.items.length === 0 && result.errors.length > 0) {
-        warnings.push(`MercadoLibre: ${result.errors[0]!.message}`);
-      }
-    } catch (err) {
+    } else {
       warnings.push(
-        `MercadoLibre: ${err instanceof Error ? err.message : "error de red"}`,
+        `MercadoLibre (Google Shopping): ${shoppingResult.reason instanceof Error ? shoppingResult.reason.message : "error"}`,
       );
     }
 
-    // ML's official search API returns a policy 403 for most third-party
-    // apps regardless of token validity — fall back to a Google-Search-
-    // grounded lookup for real listings when the direct call found nothing.
-    if (mlItems.length === 0 && geminiEnabled) {
-      try {
-        const listings = await researchMercadoLibreListings({ productName });
-        // Grounded search can still misattribute a real URL to the wrong
-        // content — fetch each candidate and confirm the claimed title is
-        // actually on the page before trusting it.
-        const verified: MercadoLibreListingCandidate[] = await verifyAll(listings);
-        mlItems = verified.map((l) => ({
+    if (geminiListingsResult.status === "fulfilled") {
+      // Grounded search can still misattribute a real URL to the wrong
+      // content, but anonymously re-fetching mercadolibre.com.ar to verify
+      // it hits the same account-verification bot-gate that blocks the
+      // official API — an unreliable filter that discarded real listings
+      // as often as fake ones. Trust the search-grounded result instead
+      // (the "Encontrado vía búsqueda web" disclaimer already tells the
+      // user to confirm it manually).
+      mlItems.push(
+        ...geminiListingsResult.value.map((l) => ({
           externalId: l.url,
           source: "gemini_research" as const,
           title: l.title,
@@ -1140,21 +1168,12 @@ export const investigateAd = action({
           currency: l.currency,
           sellerName: l.sellerName,
           condition: l.condition,
-        }));
-        if (listings.length > 0 && verified.length === 0) {
-          warnings.push(
-            "MercadoLibre: encontramos resultados por búsqueda web pero no pudimos confirmar que sean el producto real — descartados.",
-          );
-        } else if (mlItems.length === 0) {
-          warnings.push(
-            "MercadoLibre: no encontramos publicaciones ni por API ni por búsqueda web.",
-          );
-        }
-      } catch (err) {
-        warnings.push(
-          `MercadoLibre (búsqueda web): ${err instanceof Error ? err.message : "error"}`,
-        );
-      }
+        })),
+      );
+    } else if (geminiEnabled) {
+      warnings.push(
+        `MercadoLibre (búsqueda web): ${geminiListingsResult.reason instanceof Error ? geminiListingsResult.reason.message : "error"}`,
+      );
     }
 
     const { matches: mlMatches, warning: mlWarning } = rankMlMatches(
@@ -1164,12 +1183,11 @@ export const investigateAd = action({
     );
     if (mlWarning) warnings.push(mlWarning);
 
-    const [micResult, aliResult, geminiSuppliers, dolarResult] =
+    const [micResult, geminiSuppliers, dolarResult] =
       await Promise.allSettled([
         // Fetch more than we need — relevance filtering below drops the
         // ones that don't actually match the product.
         searchMadeInChina(englishQuery, { limit: 5 }),
-        searchAlibaba(englishQuery, { limit: 5 }),
         geminiEnabled
           ? researchSuppliersForProduct({
               productName,
@@ -1196,24 +1214,6 @@ export const investigateAd = action({
           moq: item.availableQuantity,
           url: item.externalUrl,
           source: "made_in_china",
-        });
-      }
-    }
-    if (aliResult.status === "fulfilled") {
-      for (const item of aliResult.value.items) {
-        chinaCandidateCount += 1;
-        if (item.price == null) continue;
-        if (!isRelevantSupplierTitle(englishQuery, item.title)) continue;
-        suppliersRaw.push({
-          title: item.title,
-          supplierName: item.sellerName,
-          country: "CN",
-          isImport: true,
-          unitPrice: item.price,
-          currency: item.currency ?? "USD",
-          moq: item.availableQuantity,
-          url: item.externalUrl,
-          source: "alibaba",
         });
       }
     }
