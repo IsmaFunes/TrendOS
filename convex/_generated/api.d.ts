@@ -43,6 +43,7 @@ import type * as radar_providers_manualSocial from "../radar/providers/manualSoc
 import type * as radar_providers_mercadolibre from "../radar/providers/mercadolibre.js";
 import type * as radar_providers_mlAuth from "../radar/providers/mlAuth.js";
 import type * as radar_providers_registry from "../radar/providers/registry.js";
+import type * as radar_providers_serpapiShopping from "../radar/providers/serpapiShopping.js";
 import type * as radar_providers_wholesale from "../radar/providers/wholesale.js";
 import type * as radar_review from "../radar/review.js";
 import type * as radar_scoring from "../radar/scoring.js";
@@ -93,6 +94,7 @@ declare const fullApi: ApiFromModules<{
   "radar/providers/mercadolibre": typeof radar_providers_mercadolibre;
   "radar/providers/mlAuth": typeof radar_providers_mlAuth;
   "radar/providers/registry": typeof radar_providers_registry;
+  "radar/providers/serpapiShopping": typeof radar_providers_serpapiShopping;
   "radar/providers/wholesale": typeof radar_providers_wholesale;
   "radar/review": typeof radar_review;
   "radar/scoring": typeof radar_scoring;

@@ -36,6 +36,15 @@ describe("buildHeuristicProductSignal", () => {
     const { searchQuery } = buildHeuristicProductSignal("Mate Imperial Store", "");
     expect(searchQuery.length).toBeGreaterThan(0);
   });
+
+  it("strips price/currency digits out of the search query", () => {
+    const { searchQuery } = buildHeuristicProductSignal(
+      "Espejos Mio",
+      "Combo X3 45.000 efectivo si",
+    );
+    expect(searchQuery).not.toMatch(/\b\d+\b/);
+    expect(searchQuery).toContain("x3");
+  });
 });
 
 describe("scoreStoreQuality", () => {
@@ -272,7 +281,7 @@ describe("computeProfitEstimate", () => {
         isImport: true,
         unitPrice: 5,
         currency: "USD",
-        source: "alibaba",
+        source: "made_in_china",
       },
     ];
     const profit = computeProfitEstimate({
@@ -299,7 +308,7 @@ describe("computeProfitEstimate", () => {
         isImport: true,
         unitPrice: 5,
         currency: "USD",
-        source: "alibaba",
+        source: "made_in_china",
       },
     ];
     const profit = computeProfitEstimate({ suppliers, estimatedSalePrice: 15_000 });
@@ -328,7 +337,7 @@ describe("computeProfitEstimate", () => {
 describe("capSuppliersByCountry", () => {
   it("caps per-country and overall totals, keeping the cheapest first", () => {
     const suppliers: SupplierOffer[] = [
-      { title: "Thermos A", country: "CN", isImport: true, unitPrice: 9, currency: "USD", source: "alibaba" },
+      { title: "Thermos A", country: "CN", isImport: true, unitPrice: 9, currency: "USD", source: "gemini_research" },
       { title: "Thermos B", country: "CN", isImport: true, unitPrice: 3, currency: "USD", source: "made_in_china" },
       { title: "Thermos C", country: "CN", isImport: true, unitPrice: 6, currency: "USD", source: "made_in_china" },
       { title: "Termo D", country: "AR", isImport: false, unitPrice: 8_000, currency: "ARS", source: "gemini_research" },

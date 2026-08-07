@@ -41,19 +41,36 @@ Proxy opcional: `META_ADS_PROXY_SERVER=http://user:pass@host:port`
 
 | Variable | Dónde | Para qué |
 |---|---|---|
-| `GEMINI_API_KEY` | Convex env | Expande términos de scrape del nicho + rankea/filtra ads por tienda |
+| `GEMINI_API_KEY` | Convex env | Expande términos de scrape del nicho + rankea/filtra ads por tienda + investigación por anuncio (extracción de producto, búsqueda de publicaciones ML, proveedores) |
 
 ```bash
 npx convex env set GEMINI_API_KEY "..."
 ```
 
-Sin key: el scrape usa solo keywords del usuario; el feed ordena por fecha (sin ranking AI).
+Sin key: el scrape usa solo keywords del usuario; el feed ordena por fecha (sin ranking AI); el botón "Investigar" sigue funcionando pero sin refinamiento de producto ni fallback de búsqueda web para ML/proveedores.
+
+## Investigar (botón por anuncio)
+
+Mercado Libre da 403 de política a la API oficial de búsqueda para apps de
+terceros no verificadas — el matching de producto en ML no usa esa API, usa
+dos fuentes de búsqueda real en paralelo:
+
+| Variable | Dónde | Para qué |
+|---|---|---|
+| `SERPAPI_API_KEY` | Convex env | Google Shopping (AR) filtrado a resultados de mercadolibre.com.ar — precios estructurados, sin riesgo de alucinación |
+| `GEMINI_API_KEY` | Convex env | Búsqueda con Google Search grounding — encuentra URLs de publicaciones ML reales |
+
+```bash
+npx convex env set SERPAPI_API_KEY "..."
+```
+
+Sin ninguna de las dos: "Investigar" corre igual pero sin matches de
+Mercado Libre (ni margen estimado, que depende del precio de venta ML).
 
 ## Opcional
 
 | Variable | Nota |
 |---|---|
-| `SERPAPI_API_KEY` | No se llama en el path caliente |
-| Mercado Libre | Solo si más adelante enriquecés comercio |
+| `MERCADOLIBRE_CLIENT_ID` / `_CLIENT_SECRET` / `_REFRESH_TOKEN` | Legacy: API oficial de ML, solo `collectProductMetrics` (precio/stock de un listing ya conocido) — el *search* de producto pasó a SerpAPI/Gemini arriba |
 
 `TREND_RADAR_SOURCES` default = `meta_ad_library`.

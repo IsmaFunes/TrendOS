@@ -25,6 +25,7 @@ export const dataSourceValidator = v.union(
   v.literal("made_in_china"),
   v.literal("alibaba"),
   v.literal("meta_ad_library"),
+  v.literal("google_shopping"),
   v.literal("simulated"),
 );
 
@@ -123,6 +124,7 @@ export type DataSource =
   | "made_in_china"
   | "alibaba"
   | "meta_ad_library"
+  | "google_shopping"
   | "simulated";
 
 export type Classification =
