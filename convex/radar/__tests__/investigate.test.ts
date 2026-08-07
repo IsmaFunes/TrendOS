@@ -4,6 +4,7 @@ import {
   capSuppliersByCountry,
   computeInvestigationScore,
   computeProfitEstimate,
+  fetchImageInlineData,
   isRelevantSupplierTitle,
   parseExtractedProductSignal,
   rankMlMatches,
@@ -416,6 +417,53 @@ describe("verifyUrlContent", () => {
     mockFetch({ ok: true, text: "<html>Publicación pausada por el vendedor</html>" });
     const ok = await verifyUrlContent("https://articulo.mercadolibre.com.ar/paused", "Termo acero");
     expect(ok).toBe(false);
+  });
+});
+
+describe("fetchImageInlineData", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function mockImageFetch(opts: {
+    ok?: boolean;
+    contentType?: string;
+    byteLength?: number;
+  }) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: opts.ok ?? true,
+        headers: { get: () => opts.contentType ?? "image/jpeg" },
+        arrayBuffer: () => Promise.resolve(new ArrayBuffer(opts.byteLength ?? 1024)),
+      }),
+    );
+  }
+
+  it("base64-encodes a real image response", async () => {
+    mockImageFetch({ contentType: "image/jpeg", byteLength: 16 });
+    const result = await fetchImageInlineData("https://example.com/ad.jpg");
+    expect(result).not.toBeNull();
+    expect(result?.mimeType).toBe("image/jpeg");
+    expect(result?.data.length).toBeGreaterThan(0);
+  });
+
+  it("rejects a non-image content-type", async () => {
+    mockImageFetch({ contentType: "text/html" });
+    const result = await fetchImageInlineData("https://example.com/blocked.html");
+    expect(result).toBeNull();
+  });
+
+  it("rejects an oversized image rather than sending it to Gemini", async () => {
+    mockImageFetch({ contentType: "image/jpeg", byteLength: 10_000_000 });
+    const result = await fetchImageInlineData("https://example.com/huge.jpg");
+    expect(result).toBeNull();
+  });
+
+  it("returns null instead of throwing on a fetch failure", async () => {
+    mockImageFetch({ ok: false });
+    const result = await fetchImageInlineData("https://example.com/gone.jpg");
+    expect(result).toBeNull();
   });
 });
 

@@ -539,19 +539,74 @@ function numFromEnv(key: string): number | undefined {
 // Local copy of the small generateContent caller (geminiAds.ts's version
 // isn't exported and that file is "use node" for an unrelated reason).
 
-async function callGeminiJsonLocal(prompt: string): Promise<string> {
+type GeminiInlineImage = { mimeType: string; data: string };
+
+/** Fits Gemini's inline-image limit with headroom; larger creatives are skipped rather than rejected outright. */
+const MAX_INLINE_IMAGE_BYTES = 6_000_000;
+const IMAGE_FETCH_TIMEOUT_MS = 6_000;
+
+function arrayBufferToBase64(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+/** Best-effort: a slow/broken image host shouldn't block product extraction, so failures resolve to null rather than throwing. */
+export async function fetchImageInlineData(url: string): Promise<GeminiInlineImage | null> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), IMAGE_FETCH_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(url, { signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!res.ok) return null;
+    const mimeType = (res.headers.get("content-type") ?? "").split(";")[0]!.trim();
+    if (!mimeType.startsWith("image/")) return null;
+    const buf = await res.arrayBuffer();
+    if (buf.byteLength === 0 || buf.byteLength > MAX_INLINE_IMAGE_BYTES) return null;
+    return { mimeType, data: arrayBufferToBase64(buf) };
+  } catch {
+    return null;
+  }
+}
+
+async function callGeminiJsonLocal(
+  prompt: string,
+  images: GeminiInlineImage[] = [],
+): Promise<string> {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) throw new Error("GEMINI_API_KEY is not configured");
+  const parts: Array<Record<string, unknown>> = [
+    ...images.map((img) => ({ inlineData: { mimeType: img.mimeType, data: img.data } })),
+    { text: prompt },
+  ];
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_FLASH_MODEL}:generateContent?key=${apiKey}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
+        contents: [{ parts }],
         generationConfig: {
           responseMimeType: "application/json",
-          maxOutputTokens: 512,
+          // gemini-3.6-flash is a thinking model — its reasoning tokens come
+          // out of this same budget. 512 was silently starving the actual
+          // answer: the model spent the whole budget "thinking" about the
+          // classification + multi-field extraction task and got cut off
+          // (finishReason MAX_TOKENS) before ever emitting JSON, leaving a
+          // stray thought fragment that failed to parse — every extraction
+          // silently fell back to the low-quality heuristic. thinkingLevel
+          // "low" plus headroom fixes it (confirmed: STOP with ~100 answer
+          // tokens instead of MAX_TOKENS with ~500 thinking tokens).
+          maxOutputTokens: 2048,
+          thinkingConfig: { thinkingLevel: "low" },
         },
       }),
     },
@@ -562,15 +617,20 @@ async function callGeminiJsonLocal(prompt: string): Promise<string> {
   }
   const json = (await res.json()) as {
     candidates?: Array<{
+      finishReason?: string;
       content?: { parts?: Array<{ text?: string; thought?: boolean }> };
     }>;
   };
-  const parts = json.candidates?.[0]?.content?.parts ?? [];
-  const text = parts
+  const finishReason = json.candidates?.[0]?.finishReason;
+  const parts2 = json.candidates?.[0]?.content?.parts ?? [];
+  const text = parts2
     .filter((p) => !p.thought && typeof p.text === "string")
     .map((p) => p.text ?? "")
     .join("")
     .trim();
+  if (finishReason === "MAX_TOKENS") {
+    throw new Error("Gemini response truncated (MAX_TOKENS) before completion");
+  }
   if (!text) throw new Error("Gemini returned empty response");
   return text;
 }
@@ -595,22 +655,30 @@ export type ExtractedProductSignal = {
  * programs, and other services, which superficially share fitness/product
  * vocabulary but have nothing to match on MercadoLibre or with a supplier.
  */
-function buildExtractProductSignalPrompt(pageName: string, body: string): string {
+function buildExtractProductSignalPrompt(
+  pageName: string,
+  body: string,
+  hasImages: boolean,
+): string {
   return `Analizá este anuncio de Meta (Facebook/Instagram) de Argentina.
 
 Página: ${pageName}
 Texto del anuncio: ${body.slice(0, 500)}
-
+${
+    hasImages
+      ? "\nTambién se adjuntan una o más imágenes reales del anuncio — usalas junto con el texto para identificar el producto exacto (marca, tipo, variante, material) que se ve en la foto, sobre todo si el texto es un gancho de marketing genérico que no lo nombra con claridad.\n"
+      : ""
+  }
 Paso 1: ¿Promociona un PRODUCTO FÍSICO concreto — un objeto tangible que se pueda importar y revender? ¿O es otra cosa: app, curso online, programa de entrenamiento/coaching, servicio, suscripción, evento, inmueble, franquicia, contenido digital?
 
 Si NO es un producto físico: isPhysicalProduct=false y explicá brevemente qué es en su lugar (ej. "programa de entrenamiento online", "app móvil").
 
 Si SÍ es un producto físico:
-- productName: nombre concreto (con material/tipo/variante), no la categoría genérica ni el nombre de la tienda.
+- productName: descripción concreta y genérica del producto (tipo + material/variante), NO la categoría demasiado amplia ni el nombre de la tienda NI un nombre de línea/producto inventado por el vendedor (ej. "Difusor Atenea" → "difusor de aromas con varillas de caña" — el nombre propio "Atenea" es exclusivo de esa tienda y nadie más lo va a listar así en MercadoLibre o con un proveedor).
 - category: rubro corto (ej. "fitness", "cocina", "mates").
-- attributes: 2-4 palabras distintivas reales del producto (material, tamaño, uso, color) mencionadas o claramente implícitas — NO ganchos de oferta.
-- searchQuery: 3-6 palabras en español para buscarlo en un marketplace, construidas con el productName + attributes.
-- englishQuery: la misma búsqueda en inglés, para mayoristas B2B como Made-in-China.
+- attributes: 2-4 palabras distintivas reales del producto (material, tamaño, uso, color) mencionadas o claramente implícitas, o visibles en la imagen — NO ganchos de oferta ni nombres de marca/línea propios.
+- searchQuery: 2-4 palabras CORTAS y genéricas en español para buscarlo en un marketplace — el término más común que usaría cualquier comprador o vendedor de ese tipo de producto (tipo + máximo 1 atributo clave). NO apiles todos los attributes juntos: sumar material + tamaño + variante en la misma búsqueda reduce drásticamente los resultados en buscadores por palabra clave. Ej: para un difusor de aromas de vidrio con tapa de madera y varillas, searchQuery="difusor aromatizador ambiente" (no "difusor de aromas de vidrio con tapa de madera y varillas").
+- englishQuery: la misma lógica en inglés (corta, genérica), para mayoristas B2B como Made-in-China.
 
 Respondé SOLO JSON:
 {"isPhysicalProduct":true,"notAProductReason":"","productName":"...","category":"...","attributes":["...","..."],"searchQuery":"...","englishQuery":"..."}`;
@@ -679,20 +747,29 @@ export function parseExtractedProductSignal(text: string): ExtractedProductSigna
   };
 }
 
+/** How many ad creatives to hand Gemini for product identification — first image is usually the hero shot; more adds latency to an interactive click for diminishing return. */
+const MAX_EXTRACT_IMAGES = 2;
+
 export async function extractProductSignalWithGemini(
   pageName: string,
   body: string,
+  mediaUrls: string[] = [],
 ): Promise<ExtractedProductSignal | null> {
-  const prompt = buildExtractProductSignalPrompt(pageName, body);
+  const images = (
+    await Promise.all(
+      mediaUrls.slice(0, MAX_EXTRACT_IMAGES).map(fetchImageInlineData),
+    )
+  ).filter((img): img is GeminiInlineImage => img != null);
+  const prompt = buildExtractProductSignalPrompt(pageName, body, images.length > 0);
   try {
-    return parseExtractedProductSignal(await callGeminiJsonLocal(prompt));
+    return parseExtractedProductSignal(await callGeminiJsonLocal(prompt, images));
   } catch {
     // Single retry, no backoff — this backs an interactive click with a
     // request timeout budget, not a batch job. A transient network blip
     // or 429 shouldn't force the low-quality heuristic fallback if a
     // second attempt would succeed.
     try {
-      return parseExtractedProductSignal(await callGeminiJsonLocal(prompt));
+      return parseExtractedProductSignal(await callGeminiJsonLocal(prompt, images));
     } catch (err) {
       structuredLog({
         source: "gemini_extract_signal",
@@ -1074,6 +1151,7 @@ export const investigateAd = action({
         const extracted = await extractProductSignalWithGemini(
           adBasic.pageName,
           adBasic.body ?? "",
+          adBasic.mediaUrls,
         );
         if (extracted && !extracted.isPhysicalProduct) {
           // "We have the ad — what's the product?" Sometimes there isn't
