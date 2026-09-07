@@ -1,4 +1,4 @@
-name: Scrape Meta Ads
+name: Scrape Meta Ads Preview
 
 # Runs the Meta Ad Library worker (scripts/meta-ad-scraper/scrape.mjs)
 # unattended, on a schedule. Convex itself can't run Playwright/a browser,
@@ -6,7 +6,10 @@ name: Scrape Meta Ads
 # Convex crons (convex/crons.ts) only ever decide WHAT needs scraping and
 # drop a job in the queue; this workflow is what claims and runs it.
 #
-# Required repo secrets (Settings -> Secrets and variables -> Actions):
+# Secrets live in the "Preview" GitHub Environment (Settings -> Environments
+# -> Preview), not plain repo secrets, since they point at the Convex DEV
+# deployment. `environment:` below is what makes those visible to this job —
+# without it, environment-scoped secrets resolve to empty strings.
 #   META_ADS_INGEST_SECRET - must match the Convex deployment's env var
 #   CONVEX_URL             - the target deployment's URL (currently dev:
 #                            https://proficient-salmon-481.convex.cloud)
@@ -20,6 +23,7 @@ on:
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    environment: Preview
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
