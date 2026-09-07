@@ -13,9 +13,13 @@ const BATCH = 256;
 
 type SchemaTable =
   | "radarAdRankings"
+  | "radarNicheAdRelevance"
+  | "radarNicheAdProductMatches"
   | "radarNicheAds"
   | "radarNicheScrapeJobs"
   | "radarNiches"
+  | "radarAdInvestigations"
+  | "radarMercadoLibreToken"
   | "radarAds"
   | "radarStores"
   | "radarAdvertisers"
@@ -41,9 +45,13 @@ type SchemaTable =
 
 const SCHEMA_TABLES: SchemaTable[] = [
   "radarAdRankings",
+  "radarNicheAdRelevance",
+  "radarNicheAdProductMatches",
   "radarNicheAds",
   "radarNicheScrapeJobs",
   "radarNiches",
+  "radarAdInvestigations",
+  "radarMercadoLibreToken",
   "radarAds",
   "radarStores",
   "radarAdvertisers",

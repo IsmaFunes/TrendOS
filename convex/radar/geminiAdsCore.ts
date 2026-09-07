@@ -5,6 +5,13 @@
 /** Same model family as geminiResearch (2.5-flash is 404 for new keys). */
 export const GEMINI_ADS_MODEL = "gemini-3.6-flash";
 export const AD_RANKING_TTL_MS = 12 * 60 * 60 * 1000;
+/**
+ * Niche-shared relevance pass TTL. Longer than the old per-user TTL since
+ * it's refreshed event-driven (new ads linked) rather than per user session,
+ * and expiry here is only a fallback so a niche that never scrapes again
+ * doesn't serve an indefinitely-stale pass.
+ */
+export const NICHE_AD_RELEVANCE_TTL_MS = 24 * 60 * 60 * 1000;
 export const MAX_ADS_TO_RANK = 60;
 /** Bump to invalidate cached rankings when gate/prompt rules change. */
 export const RANKING_RULES_VERSION = "v2-strict-niche";
@@ -80,6 +87,30 @@ export function profileFingerprint(profile: ProfileForAds): string {
     h = Math.imul(h, 16777619);
   }
   return `p${(h >>> 0).toString(16)}`;
+}
+
+/**
+ * Fingerprint for the niche-shared relevance pass — deliberately keyed only
+ * on niche keywords/scrapeTerms/label (not any one user's profile), since
+ * this pass is computed once per niche and shared across every store in it.
+ */
+export function nicheFingerprint(input: {
+  keywords: string[];
+  scrapeTerms?: string[];
+  label: string;
+}): string {
+  const raw = JSON.stringify({
+    v: RANKING_RULES_VERSION,
+    k: [...input.keywords].map((x) => x.toLowerCase()).sort(),
+    s: [...(input.scrapeTerms ?? [])].map((x) => x.toLowerCase()).sort(),
+    l: input.label.trim().toLowerCase(),
+  });
+  let h = 2166136261;
+  for (let i = 0; i < raw.length; i++) {
+    h ^= raw.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return `n${(h >>> 0).toString(16)}`;
 }
 
 export function extractJsonPayload(text: string): unknown {
@@ -211,19 +242,72 @@ Label: ${input.label ?? ""}
 
 CONTEXTO CLAVE — cómo busca Meta Ad Library: la búsqueda es "keyword_unordered", es decir requiere que TODAS las palabras del término aparezcan en el texto del anuncio (en cualquier orden). Un término de 4+ palabras técnicas casi nunca matchea nada real — es la causa #1 de "0 resultados". Un término de 1-2 palabras comunes matchea muchísimo más.
 
+Paso 0 — clasificá el nicho antes de generar términos:
+- ¿Es una CATEGORÍA amplia que agrupa productos distintos? (ej. "fitness", "mates", "cocina", "decoración") → ahí sí diversificá entre sub-productos reales de esa categoría.
+- ¿Es ya un PRODUCTO ESPECÍFICO? (ej. "almohada para bebé", "termo acero inoxidable", "yerbera de cuero") → NO diversifiques hacia productos distintos de la misma área. Quedate en variantes/sinónimos/tipos de ESE MISMO producto (material, tamaño, uso, forma, sinónimos que usaría un vendedor). Un anuncio de un producto relacionado pero distinto (ej. "almohadón de lactancia" cuando el nicho es "almohada para bebé") NO es una variante válida — es harina de otro costal, y el filtro de relevancia lo va a rechazar igual, así que ese término solo desperdicia el scrape.
+
 Reglas:
 - Máximo 10 términos.
 - 1 a 3 palabras por término (preferí 1-2). NUNCA más de 3.
 - Test obligatorio antes de sugerir un término: "¿Un vendedor argentino de ecommerce escribiría literalmente estas palabras en el texto de un anuncio?" Si suena a jerga técnica/catálogo y no a texto de venta real, descartalo.
 - Cada término tiene que nombrar un PRODUCTO CONCRETO — puede ser una sola palabra si es específica (ej. "mancuernas", "yerbera"), pero NUNCA la categoría/rubro genérica sola (ej. "fitness", "accesorios", o el nicho repetido tal cual — si el nicho es "mates", ningún término puede ser literalmente "mates" o "mate").
-  Ejemplos BUENOS: "mancuernas ajustables", "banda elástica", "guantes gym", "mat yoga", "yerbera cuero".
-  Ejemplos MALOS (rechazar): "calleras de cuero calistenia" (jerga técnica de 4 palabras, nadie escribe así en un anuncio), "straps para peso muerto" (demasiado técnico/específico), "accesorios para gimnasio" (categoría, no producto), "mates" (nicho repetido).
-- Priorizá DIVERSIDAD real: cubrí distintos sub-productos del nicho con palabras simples, no variaciones técnicas del mismo término.
+  Ejemplos BUENOS (nicho = categoría "fitness"): "mancuernas ajustables", "banda elástica", "guantes gym", "mat yoga".
+  Ejemplos BUENOS (nicho = producto específico "almohada para bebé"): "almohada bebe forma", "almohadita antivuelco", "almohada plagiocefalia" — todas siguen siendo la MISMA clase de producto.
+  Ejemplos MALOS (rechazar): "calleras de cuero calistenia" (jerga técnica de 4 palabras, nadie escribe así en un anuncio), "straps para peso muerto" (demasiado técnico/específico), "accesorios para gimnasio" (categoría, no producto), "mates" (nicho repetido), "almohadon de lactancia" cuando el nicho es "almohada para bebé" (producto distinto, no una variante).
+- Priorizá DIVERSIDAD real SOLO cuando el nicho es una categoría amplia (Paso 0) — cubrí distintos sub-productos con palabras simples. Si el nicho ya es un producto específico, priorizá en cambio cobertura de sinónimos/variantes de ESE producto.
 - PROHIBIDO incluir ganchos de oferta: "envío gratis", "cuotas sin interés", "2x1", "promo", "oferta", "gratis"
 - No inventes marcas irrelevantes
 
 Respondé SOLO JSON:
 {"terms":["..."]}`;
+}
+
+/**
+ * Niche-shared relevance pass — unlike buildRankingPrompt this has no single
+ * store's profile/exclusions to work from (the result is shared across every
+ * store in the niche), so it curates purely on topical fit to the niche
+ * itself instead of one business's notes/exclusions.
+ */
+export function buildNicheRelevancePrompt(input: {
+  label: string;
+  keywords: string[];
+  ads: Array<{
+    id: string;
+    pageName: string;
+    body: string;
+    activeDays: number;
+    searchTerm?: string;
+    destinationUrl?: string;
+  }>;
+}): string {
+  const adsJson = input.ads.map((a) => ({
+    id: a.id,
+    page: a.pageName,
+    body: a.body.slice(0, 280),
+    days: a.activeDays,
+    term: a.searchTerm ?? "",
+    dest: (a.destinationUrl ?? "").slice(0, 120),
+  }));
+  return `Sos un curador estricto de anuncios Meta para ecommerce en Argentina.
+Solo dejá anuncios del MISMO rubro de producto que este nicho. Ante la duda, DROPEÁ.
+
+Nicho: ${input.label}
+Keywords del nicho: ${JSON.stringify(input.keywords)}
+
+Anuncios candidatos:
+${JSON.stringify(adsJson)}
+
+DROP obligatorio si:
+- App / Play Store / App Store / series / drama / juegos
+- Copy principalmente en inglés, italiano u otro idioma (no español rioplatense)
+- Otro rubro (fitness, CNC, moda, fintech, etc.) aunque el searchTerm diga el nicho
+- Placeholders {{product.*}} o creativo vacío
+
+KEEP solo si el producto/oferta encaja claramente con el nicho y sus keywords.
+score 0-100, reason corto en español.
+
+Respondé SOLO JSON:
+{"keep":[{"id":"...","score":0,"reason":"..."}],"drop":[{"id":"...","reason":"..."}]}`;
 }
 
 export function buildRankingPrompt(input: {

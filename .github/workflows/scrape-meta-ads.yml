@@ -1,0 +1,45 @@
+name: Scrape Meta Ads
+
+# Runs the Meta Ad Library worker (scripts/meta-ad-scraper/scrape.mjs)
+# unattended, on a schedule. Convex itself can't run Playwright/a browser,
+# so this is the actual "does the scraping happen automatically" piece —
+# Convex crons (convex/crons.ts) only ever decide WHAT needs scraping and
+# drop a job in the queue; this workflow is what claims and runs it.
+#
+# Required repo secrets (Settings -> Secrets and variables -> Actions):
+#   META_ADS_INGEST_SECRET - must match the Convex deployment's env var
+#   CONVEX_URL             - the target deployment's URL (currently dev:
+#                            https://proficient-salmon-481.convex.cloud)
+
+on:
+  schedule:
+    # 06:00 UTC daily (~03:00 Argentina time). GitHub Actions cron is UTC.
+    - cron: "0 6 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Meta Ad Library scrape worker
+        env:
+          META_ADS_INGEST_SECRET: ${{ secrets.META_ADS_INGEST_SECRET }}
+          CONVEX_URL: ${{ secrets.CONVEX_URL }}
+        # --max-jobs is raised from the script's default of 3: the daily
+        # refresh cron (convex/crons.ts refreshAllReadyNiches) can queue
+        # every ready niche at once, not just a handful.
+        run: npm run scrape:meta-ads -- --max-jobs 20

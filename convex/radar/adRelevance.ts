@@ -20,35 +20,78 @@ const IT_MARKERS =
 const ES_MARKERS =
   /\b(env[ií]o|cuotas|gratis|argentina|compr[aá]|llev[aá]|tienda|oferta|pesos|mercadolibre|tiendanube|bombilla|matero|materos|termo|termos|mate)\b/i;
 
-export function nicheTokens(keywords: string[]): string[] {
-  const out = new Set<string>();
-  for (const raw of keywords) {
-    const norm = raw
-      .toLowerCase()
-      .normalize("NFD")
-      .replace(/\p{M}/gu, "");
-    for (const part of norm.split(/[^a-z0-9]+/)) {
-      if (part.length >= 3) out.add(part);
-    }
-  }
-  return [...out];
-}
-
-function normalizeHay(text: string): string {
+/** Lowercase + strip accents, for accent-insensitive substring matching. */
+export function normalizeForSubstringMatch(text: string): string {
   return text
     .toLowerCase()
     .normalize("NFD")
     .replace(/\p{M}/gu, "");
 }
 
+function normalizeWords(text: string): string[] {
+  const norm = text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "");
+  return norm.split(/[^a-z0-9]+/).filter(Boolean);
+}
+
+/**
+ * ES plural variants. Spanish pluralizes differently depending on the last
+ * letter: vowel-ending words just add "s" (mate→mates, termo→termos), but
+ * consonant-ending words add "es" (sartén→sartenes, color→colores,
+ * reloj→relojes) — a real product word like "sarten" was previously only
+ * ever stemmed to "sartens", which never matches how sellers actually write
+ * "sartenes" in ad copy, silently rejecting otherwise-relevant ads.
+ */
+function stemWord(word: string): string[] {
+  const variants = new Set<string>([word]);
+  const endsInVowel = /[aeiou]$/.test(word);
+  if (word.length > 3 && word.endsWith("es") && !endsInVowel) {
+    variants.add(word.slice(0, -2)); // sartenes -> sarten
+  }
+  if (word.length > 3 && word.endsWith("s") && !word.endsWith("es") && !word.endsWith("ss")) {
+    variants.add(word.slice(0, -1)); // termos -> termo
+  }
+  if (word.length >= 3 && !word.endsWith("s")) {
+    variants.add(endsInVowel ? `${word}s` : `${word}es`); // termo -> termos, sarten -> sartenes
+  }
+  return [...variants];
+}
+
+function creativeWordSet(text: string): Set<string> {
+  const out = new Set<string>();
+  for (const w of normalizeWords(text)) {
+    if (w.length >= 2) out.add(w);
+  }
+  return out;
+}
+
+/**
+ * True when every significant (>=3 char) word of `keyword` is present as a
+ * whole word (allowing ES plural variants) in `hay`. Single-word keywords
+ * still need a single whole-word hit; multi-word keywords/scrapeTerms need
+ * every word present, mirroring Meta's own keyword_unordered AND semantics
+ * instead of matching on any one word alone.
+ */
+function keywordPhraseMatches(keyword: string, hay: Set<string>): boolean {
+  const words = normalizeWords(keyword).filter((w) => w.length >= 3);
+  if (words.length === 0) return false;
+  return words.every((w) => stemWord(w).some((variant) => hay.has(variant)));
+}
+
+/**
+ * Whole-word, phrase-aware overlap between `text` and any of `keywords`.
+ * Deliberately NOT a substring check — "tomate" must not match keyword
+ * "mate" just because one contains the other as a run of characters.
+ */
 export function hasNicheKeywordOverlap(
   text: string,
   keywords: string[],
 ): boolean {
-  const tokens = nicheTokens(keywords);
-  if (tokens.length === 0) return true;
-  const hay = normalizeHay(text);
-  return tokens.some((t) => hay.includes(t));
+  if (keywords.length === 0) return true;
+  const hay = creativeWordSet(text);
+  return keywords.some((kw) => keywordPhraseMatches(kw, hay));
 }
 
 export function isAppOrInstallAd(input: {

@@ -6,7 +6,6 @@ import { getCurrentUserOrNull, requireIdentity } from "./lib/auth";
 import {
   clampNicheDescription,
   clampShortNotes,
-  hasNicheSignal,
   MAX_LOGISTICS_CONSTRAINTS_LENGTH,
   MAX_STORAGE_NOTES_LENGTH,
   normalizeExcludedKeywords,
@@ -145,20 +144,18 @@ export const completeOnboarding = mutation({
     // Persisted as-is — the user's own text, never mixed with category names.
     const description = clampNicheDescription(args.description);
     // Fold selected categories into a SEPARATE description used only for
-    // niche resolution, so they actually reach scrape-term generation
-    // without polluting the description field the user sees/edits — and so
-    // picking categories alone is a valid way to define a niche, without
-    // typing free-text keywords first.
+    // niche resolution, so they reach scrape-term generation as light
+    // context — without polluting the description field the user
+    // sees/edits. Categories no longer stand in for a real keyword: a
+    // category is always a coarse bucket, never specific enough to gate
+    // ads on by itself, so at least one typed keyword is required.
     const nicheDescription = foldCategoryNamesIntoDescription(
       categoryNames,
       description,
     );
-    if (
-      args.goal !== "browse_ads" &&
-      !hasNicheSignal({ keywords: nicheKeywords, description: nicheDescription })
-    ) {
+    if (nicheKeywords.length === 0) {
       throw new Error(
-        "Contanos qué tipo de productos te interesan (elegí una categoría o agregá una keyword)",
+        "Contanos qué producto específico te interesa (agregá al menos una keyword)",
       );
     }
 
@@ -202,15 +199,15 @@ export const completeOnboarding = mutation({
       .withIndex("by_user", (q) => q.eq("userId", user._id))
       .unique();
 
-    let nicheId = existingProfile?.nicheId;
-    if (nicheKeywords.length > 0 || nicheDescription) {
-      const resolved = await resolveOrCreateNicheCore(ctx, {
-        keywords: nicheKeywords,
-        description: nicheDescription,
-        country: "AR",
-      });
-      nicheId = resolved.nicheId;
-    }
+    // nicheKeywords.length > 0 is guaranteed by the check above — categories
+    // (folded only into nicheDescription, as light context) never stand in
+    // for a real keyword here.
+    const resolved = await resolveOrCreateNicheCore(ctx, {
+      keywords: nicheKeywords,
+      description: nicheDescription,
+      country: "AR",
+    });
+    const nicheId = resolved.nicheId;
 
     const profileData = {
       userId: user._id,
@@ -301,10 +298,8 @@ export const updateBusinessProfile = mutation({
       categoryNames,
       description,
     );
-    if (!hasNicheSignal({ keywords: nicheKeywords, description: nicheDescription })) {
-      throw new Error(
-        "Agregá al menos 1 keyword, una categoría o una descripción corta de lo que revendés",
-      );
+    if (nicheKeywords.length === 0) {
+      throw new Error("Agregá al menos 1 keyword de lo que revendés");
     }
 
     const excludedKeywords = normalizeExcludedKeywords(args.excludedKeywords);
@@ -343,7 +338,10 @@ export const updateBusinessProfile = mutation({
       .unique();
 
     let nicheId = existingProfile?.nicheId;
-    if (nicheKeywords.length > 0 || nicheDescription) {
+    {
+      // nicheKeywords.length > 0 is guaranteed by the check above —
+      // categories (folded only into nicheDescription) never stand in for
+      // a real keyword here.
       const resolved = await resolveOrCreateNicheCore(ctx, {
         keywords: nicheKeywords,
         description: nicheDescription,

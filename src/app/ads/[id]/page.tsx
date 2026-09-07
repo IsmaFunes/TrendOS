@@ -13,6 +13,18 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 
+function formatMlPrice(value: number | undefined, currency: string | undefined): string | null {
+  if (value == null || !Number.isFinite(value)) return null;
+  if (currency === "ARS" || !currency) {
+    return new Intl.NumberFormat("es-AR", {
+      style: "currency",
+      currency: "ARS",
+      maximumFractionDigits: 0,
+    }).format(value);
+  }
+  return `${currency} ${value.toLocaleString("es-AR")}`;
+}
+
 export default function AdDetailPage() {
   const params = useParams();
   const adId = params.id as Id<"radarAds">;
@@ -58,12 +70,60 @@ export default function AdDetailPage() {
               {ad.activeDays != null && ad.activeDays > 0 && (
                 <Badge variant="outline">{ad.activeDays} días activos</Badge>
               )}
+              {ad.advertiserActiveAdCount != null &&
+                ad.advertiserActiveAdCount > 0 && (
+                  <Badge variant="outline">
+                    {ad.advertiserActiveAdCount} anuncios activos
+                  </Badge>
+                )}
               {ad.platforms.map((p) => (
                 <Badge key={p} variant="outline">
                   {p}
                 </Badge>
               ))}
             </div>
+
+            {ad.storeQualityLabel && (
+              <p className="mt-3 text-sm text-primary">{ad.storeQualityLabel}</p>
+            )}
+
+            {ad.mlMatch && (
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                <Badge
+                  variant={
+                    ad.mlMatch.badge === "best_match"
+                      ? "default"
+                      : ad.mlMatch.badge === "match"
+                        ? "secondary"
+                        : "outline"
+                  }
+                >
+                  {formatMlPrice(ad.mlMatch.price, ad.mlMatch.currency) ??
+                    "Visto en ML"}
+                </Badge>
+                {ad.mlMatch.permalink && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    render={
+                      <a
+                        href={ad.mlMatch.permalink}
+                        target="_blank"
+                        rel="noreferrer"
+                      />
+                    }
+                  >
+                    Ver publicación
+                    <ExternalLink className="size-3" />
+                  </Button>
+                )}
+                {ad.mlMatchVerification === "unverified_single_source" && (
+                  <span className="text-xs text-muted-foreground">
+                    Encontrado vía búsqueda web — confirmá el precio.
+                  </span>
+                )}
+              </div>
+            )}
 
             {ad.body && (
               <p className="mt-5 whitespace-pre-wrap text-foreground">

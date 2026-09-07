@@ -51,8 +51,8 @@ export type LlmMatchAdvisor = {
   }): Promise<{ confidence: number; explanation: string } | null>;
 };
 
-const AUTO_MERGE_THRESHOLD = 0.85;
-const MANUAL_REVIEW_THRESHOLD = 0.45;
+export const AUTO_MERGE_THRESHOLD = 0.85;
+export const MANUAL_REVIEW_THRESHOLD = 0.45;
 
 /**
  * Stage 1: exact external id is handled by the caller (listing unique index).

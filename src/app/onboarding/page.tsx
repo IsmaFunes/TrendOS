@@ -15,6 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { ToggleChip } from "@/components/ToggleChip";
 import { BrandLogo } from "@/components/BrandLogo";
 import { cn } from "@/lib/utils";
+import { MAX_NICHE_KEYWORDS } from "../../../convex/lib/nicheProfile";
 
 type BusinessGoal =
   | "start_ecommerce"
@@ -60,7 +61,9 @@ const CHANNELS = [
   "WhatsApp",
 ];
 
-const MAX_KEYWORDS = 5;
+// Kept in sync with the backend cap (convex/lib/nicheProfile.ts) — keywords
+// past this are silently dropped server-side, so the UI must not accept more.
+const MAX_KEYWORDS = MAX_NICHE_KEYWORDS;
 const MAX_EXCLUSIONS = 10;
 
 const STEP_LABELS = [
@@ -394,9 +397,9 @@ export default function OnboardingPage() {
           <section className="flex flex-1 flex-col">
             <h3>Nicho específico</h3>
             <p className="mt-1 text-sm text-muted-foreground">
-              {selectedCategoryIds.length > 0
-                ? "Opcional — sumá palabras clave para afinar más tu nicho dentro de las categorías que elegiste."
-                : "Escribí palabras clave (ej. cocina, mascotas, fitness)."}
+              Escribí al menos una keyword del producto específico que vendés
+              (ej. cocina, mascotas, fitness) — las categorías solo ayudan a
+              afinar, no reemplazan esto.
             </p>
             <div className="mt-6 flex max-w-[420px] gap-2">
               <Input
@@ -409,11 +412,22 @@ export default function OnboardingPage() {
                   }
                 }}
                 placeholder="Agregar keyword"
+                disabled={nicheKeywords.length >= MAX_KEYWORDS}
               />
-              <Button type="button" variant="secondary" onClick={addKeyword}>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={addKeyword}
+                disabled={nicheKeywords.length >= MAX_KEYWORDS}
+              >
                 Agregar
               </Button>
             </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              {nicheKeywords.length >= MAX_KEYWORDS
+                ? `Máximo ${MAX_KEYWORDS} keywords.`
+                : `Hasta ${MAX_KEYWORDS} keywords.`}
+            </p>
             <div className="mt-3 flex flex-wrap gap-2">
               {nicheKeywords.map((kw) => (
                 <Badge
@@ -531,13 +545,8 @@ export default function OnboardingPage() {
               type="button"
               className="flex-1"
               onClick={() => {
-                if (
-                  step === 5 &&
-                  goal !== "browse_ads" &&
-                  nicheKeywords.length === 0 &&
-                  selectedCategoryIds.length === 0
-                ) {
-                  setError("Elegí una categoría o agregá una keyword");
+                if (step === 5 && nicheKeywords.length === 0) {
+                  setError("Agregá al menos una keyword");
                   return;
                 }
                 setError(null);
@@ -554,12 +563,8 @@ export default function OnboardingPage() {
               className="flex-1"
               disabled={saving}
               onClick={() => {
-                if (
-                  goal !== "browse_ads" &&
-                  nicheKeywords.length === 0 &&
-                  selectedCategoryIds.length === 0
-                ) {
-                  setError("Elegí una categoría o agregá una keyword");
+                if (nicheKeywords.length === 0) {
+                  setError("Agregá al menos una keyword");
                   return;
                 }
                 void finish();

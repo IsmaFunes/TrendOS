@@ -24,8 +24,14 @@ import { resolve } from "node:path";
 
 const COUNTRY = "AR";
 
-/** Target ads per niche job — "for now, the max is 15" per product direction. */
-const DEFAULT_NICHE_AD_TARGET = 15;
+/**
+ * Target ads per niche job. Raised from the original 15 — at 15, the first
+ * one or two productive search terms routinely ate the whole budget before
+ * the rest of Gemini's ~10 generated terms (covering different sub-products)
+ * ever ran, which is what made niche feeds feel narrow. 50 gives enough
+ * headroom for scrapeTerms' round-robin pass to actually cover most terms.
+ */
+const DEFAULT_NICHE_AD_TARGET = 50;
 
 function parseArgs(argv) {
   const out = {
@@ -419,20 +425,24 @@ async function launchBrowser() {
 }
 
 /**
- * Work through terms in order, accumulating unique ads, and stop as soon as
- * `limit` is reached instead of visiting every term with an even (and often
- * wasteful) per-term split — a term that turns out to be dead weight (0
- * results) shouldn't have starved a productive one of budget, and a
- * productive one shouldn't get cut off early just because there are more
- * terms left in the list.
+ * Two passes. First, round-robin with a per-term cap so one generic,
+ * high-volume term (e.g. "mancuernas") can't consume the entire niche
+ * budget and starve the other Gemini-generated terms that cover different
+ * sub-products — that's what was making niche feeds feel narrow even with
+ * a diverse term list. Second, an uncapped pass over the same terms to
+ * spend any budget a dead term (0 results) left unused, so raising the cap
+ * for diversity doesn't cost total volume.
  */
 async function scrapeTerms(page, terms, limit, debug) {
   const byId = new Map();
+  const perTermCap = Math.max(6, Math.ceil(limit / terms.length) + 2);
+
   for (const term of terms) {
     if (byId.size >= limit) break;
     const remaining = limit - byId.size;
+    const termLimit = Math.min(perTermCap, remaining);
     try {
-      const batch = await scrapeTerm(page, term, remaining, debug);
+      const batch = await scrapeTerm(page, term, termLimit, debug);
       for (const ad of batch) {
         if (!byId.has(ad.externalAdId)) byId.set(ad.externalAdId, ad);
       }
@@ -440,6 +450,22 @@ async function scrapeTerms(page, terms, limit, debug) {
       console.warn(`Term "${term}" failed:`, err.message);
     }
   }
+
+  if (byId.size < limit) {
+    for (const term of terms) {
+      if (byId.size >= limit) break;
+      const remaining = limit - byId.size;
+      try {
+        const batch = await scrapeTerm(page, term, remaining, debug);
+        for (const ad of batch) {
+          if (!byId.has(ad.externalAdId)) byId.set(ad.externalAdId, ad);
+        }
+      } catch (err) {
+        console.warn(`Term "${term}" (fill pass) failed:`, err.message);
+      }
+    }
+  }
+
   return [...byId.values()].slice(0, limit);
 }
 

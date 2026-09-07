@@ -592,7 +592,30 @@ function asSupplierCountry(value: unknown): "AR" | "CN" | "BR" | null {
   return null;
 }
 
-function parseSupplierJson(text: string): SupplierCandidate[] | null {
+/**
+ * These are retail marketplaces (single-unit, consumer price) — the exact
+ * channel the user is sourcing product to resell ON, not a wholesale
+ * supplier. The prompt already forbids them, but a grounded web search can
+ * still surface one (they dominate AR/BR search results), so this is a
+ * hard backstop independent of prompt compliance.
+ */
+const RETAIL_MARKETPLACE_HOSTS = [
+  "mercadolibre.com",
+  "mercadoshops.com",
+  "mercadolivre.com",
+];
+
+function isRetailMarketplaceUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return RETAIL_MARKETPLACE_HOSTS.some((blocked) => host.includes(blocked));
+  } catch {
+    return false;
+  }
+}
+
+/** Exported for unit tests — pure JSON parsing/filtering, no network calls. */
+export function parseSupplierJson(text: string): SupplierCandidate[] | null {
   if (!text) return null;
   const cleaned = text
     .replace(/^```(?:json)?\s*/i, "")
@@ -635,6 +658,7 @@ function parseSupplierJson(text: string): SupplierCandidate[] | null {
     // check relevance against (a supplier offer with no title is exactly
     // how an unrelated product slips through unnoticed).
     if (!country || !url || unitPrice == null || !title) continue;
+    if (isRetailMarketplaceUrl(url)) continue;
     const currency = asCurrencyCode(
       row.currency ?? row.cur,
       country === "AR" ? "ARS" : country === "BR" ? "BRL" : "USD",
@@ -683,22 +707,36 @@ export async function researchSuppliersForProduct(input: {
   const maxPerCountry = input.maxPerCountry ?? 2;
   const niche = input.niche?.trim();
 
-  const prompt = `Sos sourcing agent para un ecommerce en Argentina.
-Producto EXACTO a abastecer: "${input.productName}"${niche ? ` (nicho del seller: ${niche})` : ""}.
+  const prompt = `Sos sourcing agent para alguien que quiere ARMAR SU PROPIA TIENDA revendiendo
+"${input.productName}"${niche ? ` (nicho: ${niche})` : ""} — necesita comprarlo POR MAYOR
+(varias unidades, precio de mayorista) a un proveedor, no una unidad suelta a precio
+de venta al público.
 
-Usá Google Search para encontrar ofertas de compra REALES y verificables (mayoristas,
-importadoras, fabricantes o marketplaces B2B) para ESE PRODUCTO ESPECÍFICO — no un
-producto relacionado, no un accesorio, no otra categoría del mismo rubro — en estos
-3 países:
-- AR (Argentina): mayorista/distribuidor local — el seller NO tendría que importar.
-- CN (China): Alibaba / Made-in-China / fabricante directo — requiere importar.
-- BR (Brasil): mayorista/distribuidor — requiere importar a Argentina.
+PROHIBIDO ABSOLUTO: Mercado Libre, Mercado Shops, o cualquier otro marketplace de venta
+minorista al público (una sola unidad, precio de consumidor final). Esos NO son
+proveedores — son competencia/el canal donde el usuario va a VENDER, no donde va a
+COMPRAR. Si una publicación es de mercadolibre.com.ar, mercadoshops.com.ar, o similar,
+descartala sin excepción aunque el precio parezca bueno.
+
+Usá Google Search para encontrar ofertas de compra POR MAYOR, reales y verificables
+(mayoristas, distribuidores, importadoras, fabricantes) para ESE PRODUCTO ESPECÍFICO —
+no un producto relacionado, no un accesorio, no otra categoría del mismo rubro — en
+estos 3 países:
+- AR (Argentina): mayorista/distribuidor local que venda por bulto/lote — el seller NO
+  tendría que importar. Buscá específicamente páginas/publicaciones que digan "por
+  mayor", "mayorista", "distribuidor", "venta por bulto", con cantidad mínima de compra.
+- CN (China): Alibaba / Made-in-China / fabricante directo — requiere importar, casi
+  siempre con MOQ (cantidad mínima de pedido).
+- BR (Brasil): mayorista/distribuidor por bulto — requiere importar a Argentina.
 
 RECHAZÁ cualquier resultado donde el título real de la publicación/ficha no describa
 claramente el mismo producto que "${input.productName}" — ante la duda, NO lo incluyas.
+RECHAZÁ también cualquier oferta que sea claramente venta unitaria al público sin
+ningún indicio de precio/cantidad mayorista.
 Hasta ${maxPerCountry} ofertas por país (menos si no encontrás suficientes que calcen).
 Cada oferta DEBE tener: el título REAL tal como aparece en la publicación, una URL real
-de esa ficha, y un precio unitario numérico.
+de esa ficha, y un precio unitario numérico. Incluí moq (cantidad mínima de compra)
+siempre que la publicación lo indique — priorizá ofertas que sí lo muestren.
 NO inventes proveedores, títulos, precios ni URLs. Si no encontrás nada confiable y
 relevante para un país, omitilo.
 

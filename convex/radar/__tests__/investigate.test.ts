@@ -171,21 +171,25 @@ describe("rankMlMatches", () => {
     expect(warning).toBeTruthy();
   });
 
-  it("badges the strongest match as best_match and keeps others as alternatives", () => {
+  it("badges the strongest match as best_match and drops unrelated noise entirely", () => {
     const { matches, warning } = rankMlMatches("termo acero inoxidable 1l", [
       item({ externalId: "A", title: "Termo Acero Inoxidable 1L", soldQuantity: 50 }),
       item({ externalId: "B", title: "Mochila urbana antirrobo", soldQuantity: 500 }),
     ]);
+    // Unlike a plain similarity score with no floor, "Mochila urbana
+    // antirrobo" shares nothing with the query and must not be shown at
+    // all — not even as a weak "alternative".
+    expect(matches).toHaveLength(1);
     expect(matches[0]!.externalId).toBe("A");
     expect(matches[0]!.badge).toBe("best_match");
-    expect(matches.some((m) => m.badge === "alternative")).toBe(true);
     expect(warning).toBeUndefined();
   });
 
-  it("warns when even the top match is weak", () => {
-    const { warning } = rankMlMatches("termo acero inoxidable 1l", [
+  it("drops a weak top match below the manual-review floor instead of showing it as a real alternative", () => {
+    const { matches, warning } = rankMlMatches("termo acero inoxidable 1l", [
       item({ externalId: "C", title: "Funda para celular" }),
     ]);
+    expect(matches).toHaveLength(0);
     expect(warning).toBeTruthy();
   });
 
@@ -228,6 +232,21 @@ describe("computeInvestigationScore", () => {
     });
     expect(score).toBeLessThan(4);
     expect(classification).toBe("weak");
+  });
+
+  it("gives zero ml signal (not a floor) when there are zero ML matches", () => {
+    const zeroMatches = computeInvestigationScore({
+      targetActiveDays: 30,
+      targetStoreQuality: 0.5,
+      similarAdCount: 1,
+      bestMlMatchScore: 0,
+      bestMlSoldQuantity: undefined,
+      mlMatchCount: 0,
+      suppliersFound: 0,
+      sourcingMargin: null,
+      nicheFitScore: 0.5,
+    });
+    expect(zeroMatches.breakdown.mlSignal).toBe(0);
   });
 
   it("always stays within [0, 10]", () => {

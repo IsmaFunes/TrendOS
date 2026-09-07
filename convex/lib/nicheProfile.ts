@@ -44,16 +44,24 @@ export type NicheInput = {
   excludedKeywords?: string[] | undefined;
 };
 
-/** Light ES plural variants: mates↔mate, termos↔termo. */
+/**
+ * ES plural variants. Consonant-ending words pluralize with "es"
+ * (sartén→sartenes, color→colores), not a bare "s" — see the identical fix
+ * in convex/radar/adRelevance.ts's stemWord for why this matters.
+ */
 function stemVariants(token: string): string[] {
   const t = token.trim();
   if (t.length < 2) return [];
   const out = new Set<string>([t]);
-  if (t.length > 3 && t.endsWith("s") && !t.endsWith("ss")) {
+  const endsInVowel = /[aeiou]$/.test(t);
+  if (t.length > 3 && t.endsWith("es") && !endsInVowel) {
+    out.add(t.slice(0, -2));
+  }
+  if (t.length > 3 && t.endsWith("s") && !t.endsWith("es") && !t.endsWith("ss")) {
     out.add(t.slice(0, -1));
   }
   if (t.length >= 3 && !t.endsWith("s")) {
-    out.add(`${t}s`);
+    out.add(endsInVowel ? `${t}s` : `${t}es`);
   }
   return [...out];
 }
@@ -183,8 +191,13 @@ export function nicheSimilarity(a: NicheInput, b: NicheInput): number {
   return jaccard(nicheTokenSet(a), nicheTokenSet(b));
 }
 
-/** Minimum Jaccard to reuse an existing niche bucket. */
-export const NICHE_REUSE_SIMILARITY_MIN = 0.55;
+/**
+ * Minimum Jaccard to reuse an existing niche bucket. Niches carry at most 3
+ * keywords, so token sets are small and Jaccard is coarse — a single shared
+ * token can already clear a loose bar and silently merge two unrelated
+ * businesses' ad pools. Kept relatively strict for that reason.
+ */
+export const NICHE_REUSE_SIMILARITY_MIN = 0.72;
 
 function keywordHitsTitle(keyword: string, titleNorm: string): boolean {
   const kwNorm = normalizeProductName(keyword);

@@ -2,12 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import {
-  useAction,
-  useConvexAuth,
-  useMutation,
-  useQuery,
-} from "convex/react";
+import { useConvexAuth, useMutation, useQuery } from "convex/react";
 import { useRouter } from "next/navigation";
 import { Search } from "lucide-react";
 import { api } from "../../../convex/_generated/api";
@@ -27,25 +22,34 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 
-type SortMode = "personalized" | "recent" | "active_days";
+type SortMode = "quality" | "recent" | "active_days";
 
 const SORT_LABELS: Record<SortMode, string> = {
-  personalized: "Para vos",
+  quality: "Mejor calidad",
   recent: "Más recientes",
   active_days: "Más días activos",
 };
+
+function formatMlPrice(value: number | undefined, currency: string | undefined): string | null {
+  if (value == null || !Number.isFinite(value)) return null;
+  if (currency === "ARS" || !currency) {
+    return new Intl.NumberFormat("es-AR", {
+      style: "currency",
+      currency: "ARS",
+      maximumFractionDigits: 0,
+    }).format(value);
+  }
+  return `${currency} ${value.toLocaleString("es-AR")}`;
+}
 
 export default function AdsPage() {
   const router = useRouter();
   const { isAuthenticated, isLoading } = useConvexAuth();
   const user = useQuery(api.users.me);
   const ensureMyNiche = useMutation(api.radar.niches.ensureMyNiche);
-  const refreshRanking = useAction(api.radar.geminiAds.refreshMyAdRanking);
   const [search, setSearch] = useState("");
-  const [sort, setSort] = useState<SortMode>("personalized");
+  const [sort, setSort] = useState<SortMode>("quality");
   const [nicheReady, setNicheReady] = useState(false);
-  const [rankingBusy, setRankingBusy] = useState(false);
-  const [now] = useState(() => Date.now());
 
   useEffect(() => {
     if (!isAuthenticated || !user?.onboardingComplete) return;
@@ -69,50 +73,14 @@ export default function AdsPage() {
     isAuthenticated && user?.onboardingComplete && nicheReady ? {} : "skip",
   );
 
-  const rankingState = useQuery(
-    api.radar.adRanking.getMyRankingState,
-    isAuthenticated &&
-      user?.onboardingComplete &&
-      nicheReady &&
-      feedState?.status === "ready"
-      ? { now }
-      : "skip",
-  );
-
-  useEffect(() => {
-    if (!isAuthenticated || !nicheReady) return;
-    if (feedState?.status !== "ready") return;
-    if (!rankingState) return;
-    if (rankingState.status !== "missing" && rankingState.status !== "stale") {
-      return;
-    }
-    let cancelled = false;
-    setRankingBusy(true);
-    void (async () => {
-      try {
-        // Force rebuild so stricter Gemini drop rules apply after code updates.
-        await refreshRanking({ force: rankingState.status === "stale" });
-      } catch {
-        /* Gemini optional */
-      } finally {
-        if (!cancelled) setRankingBusy(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    isAuthenticated,
-    nicheReady,
-    feedState?.status,
-    rankingState?.status,
-    refreshRanking,
-  ]);
-
+  // Relevance filtering now runs server-side, shared per niche, triggered
+  // automatically after each scrape — no per-user client-triggered Gemini
+  // call needed here anymore (see convex/radar/geminiAds.ts
+  // refreshNicheAdRelevance).
   const ads = useQuery(
     api.radar.metaAds.listAdsForUser,
     isAuthenticated && user?.onboardingComplete && nicheReady
-      ? { search: search || undefined, sort, limit: 48, now }
+      ? { search: search || undefined, sort, limit: 48 }
       : "skip",
   );
 
@@ -127,6 +95,10 @@ export default function AdsPage() {
         return feedState.nicheLabel
           ? `Buscando anuncios para “${feedState.nicheLabel}”…`
           : "Buscando anuncios para tu nicho…";
+      case "relevance_pending":
+        return feedState.nicheLabel
+          ? `Revisando la relevancia de los anuncios de “${feedState.nicheLabel}”…`
+          : "Revisando la relevancia de los anuncios de tu nicho…";
       case "empty":
         return "Todavía no encontramos anuncios para tu nicho. Probá otras keywords.";
       default:
@@ -171,11 +143,9 @@ export default function AdsPage() {
             {feedState?.nicheLabel
               ? `Basado en tu nicho: ${feedState.nicheLabel}`
               : "Personalizados para tu tienda"}
-            {rankingBusy
-              ? " · Ordenando para vos…"
-              : rankingState?.status === "fresh"
-                ? " · Ordenados para tu tienda"
-                : ""}
+            {feedState?.status === "ready" && sort === "quality"
+              ? " · Los 10 mejores anuncios"
+              : ""}
           </p>
         </div>
         {ads && ads.length > 0 && (
@@ -220,7 +190,8 @@ export default function AdsPage() {
           <p className="text-foreground">{emptyMessage}</p>
           <p className="mt-2 text-sm text-muted-foreground">
             {feedState?.status === "pending_scrape" ||
-            feedState?.status === "scraping"
+            feedState?.status === "scraping" ||
+            feedState?.status === "relevance_pending"
               ? "En unos minutos vas a ver anuncios de tu categoría."
               : "Podés ajustar tus keywords en Mi tienda."}
           </p>
@@ -264,11 +235,39 @@ export default function AdsPage() {
                     <Badge variant="outline" className="text-[10.5px]">
                       {ad.isActive ? "Activo" : "Inactivo"}
                     </Badge>
+                    {ad.advertiserActiveAdCount != null &&
+                      ad.advertiserActiveAdCount > 0 && (
+                        <Badge variant="outline" className="text-[10.5px]">
+                          {ad.advertiserActiveAdCount} anuncios activos
+                        </Badge>
+                      )}
                   </div>
-                  {ad.rankReason && sort === "personalized" && (
+                  {ad.storeQualityLabel && (
                     <p className="line-clamp-1 text-xs text-primary">
-                      {ad.rankReason}
+                      {ad.storeQualityLabel}
                     </p>
+                  )}
+                  {ad.mlMatch && (
+                    <div className="flex items-center gap-1.5">
+                      <Badge
+                        variant={
+                          ad.mlMatch.badge === "best_match"
+                            ? "default"
+                            : ad.mlMatch.badge === "match"
+                              ? "secondary"
+                              : "outline"
+                        }
+                        className="text-[10.5px]"
+                      >
+                        {formatMlPrice(ad.mlMatch.price, ad.mlMatch.currency) ??
+                          "Visto en ML"}
+                      </Badge>
+                      {ad.mlMatchVerification === "unverified_single_source" && (
+                        <span className="text-[10px] text-muted-foreground">
+                          confirmá el precio
+                        </span>
+                      )}
+                    </div>
                   )}
                   <span
                     className={cn(

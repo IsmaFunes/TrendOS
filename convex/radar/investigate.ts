@@ -20,10 +20,12 @@ import {
 import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import {
+  detectBrandModel,
   stripNumericNoiseTokens,
   textSimilarity,
   tokenizeProductName,
 } from "./normalize";
+import { AUTO_MERGE_THRESHOLD, MANUAL_REVIEW_THRESHOLD } from "./matching";
 import { nicheRelevance } from "../lib/nicheProfile";
 import { calculateMargin } from "./logistics";
 import { getCurrentUserOrNull } from "../lib/auth";
@@ -221,6 +223,29 @@ export type RankedMlMatch = {
   source: DataSource;
 };
 
+/**
+ * Score a candidate ML listing against the search query the same way
+ * matching.ts's catalog matcher scores a listing against a known product:
+ * brand+model agreement outranks raw text similarity, since two products in
+ * the same category can share most of their words without being the same
+ * SKU (e.g. two thermos ads). Kept in sync with matching.ts's thresholds
+ * (AUTO_MERGE_THRESHOLD / MANUAL_REVIEW_THRESHOLD) so "confident enough to
+ * show as a match" means the same thing everywhere in the app.
+ */
+function scoreMlCandidate(searchQuery: string, item: ExternalProduct): number {
+  const textScore = textSimilarity(searchQuery, item.title);
+  const queryBrandModel = detectBrandModel(searchQuery);
+  const itemBrandModel = detectBrandModel(item.title);
+  const brand = (item.brand ?? itemBrandModel.brand)?.toLowerCase();
+  const model = (item.model ?? itemBrandModel.model)?.toLowerCase();
+  const queryBrand = queryBrandModel.brand?.toLowerCase();
+  const queryModel = queryBrandModel.model?.toLowerCase();
+  if (brand && model && brand === queryBrand && model === queryModel) {
+    return Math.max(textScore, 0.9);
+  }
+  return textScore;
+}
+
 export function rankMlMatches(
   searchQuery: string,
   items: ExternalProduct[],
@@ -229,8 +254,12 @@ export function rankMlMatches(
   const scored = items
     .map((item) => ({
       item,
-      matchScore: textSimilarity(searchQuery, item.title),
+      matchScore: scoreMlCandidate(searchQuery, item),
     }))
+    // A low-similarity item isn't a real "alternative" — it's noise. Only
+    // candidates a human would recognize as at least plausibly the same
+    // product get surfaced at all (mirrors matching.ts's MANUAL_REVIEW_THRESHOLD).
+    .filter(({ matchScore }) => matchScore >= MANUAL_REVIEW_THRESHOLD)
     .sort((a, b) => {
       if (b.matchScore !== a.matchScore) return b.matchScore - a.matchScore;
       return (b.item.soldQuantity ?? 0) - (a.item.soldQuantity ?? 0);
@@ -247,9 +276,9 @@ export function rankMlMatches(
 
   const matches: RankedMlMatch[] = scored.map(({ item, matchScore }, index) => {
     const badge: RankedMlMatch["badge"] =
-      index === 0 && matchScore >= 0.32
+      index === 0 && matchScore >= AUTO_MERGE_THRESHOLD
         ? "best_match"
-        : matchScore >= 0.22
+        : matchScore >= AUTO_MERGE_THRESHOLD
           ? "match"
           : "alternative";
     return {
@@ -322,7 +351,7 @@ export function computeInvestigationScore(
       : 0;
   const mlSignal =
     inputs.mlMatchCount === 0
-      ? 0.15
+      ? 0
       : clamp01(
           inputs.bestMlMatchScore * 0.5 +
             demandFromSold * 0.35 +
@@ -544,6 +573,13 @@ type GeminiInlineImage = { mimeType: string; data: string };
 /** Fits Gemini's inline-image limit with headroom; larger creatives are skipped rather than rejected outright. */
 const MAX_INLINE_IMAGE_BYTES = 6_000_000;
 const IMAGE_FETCH_TIMEOUT_MS = 6_000;
+/**
+ * Meta's SD ad video is usually a few MB for a short clip, but keep well
+ * under Gemini's combined inline-request ceiling (~20MB) since it shares
+ * the request with the prompt and any images — skip rather than truncate.
+ */
+const MAX_INLINE_VIDEO_BYTES = 15_000_000;
+const VIDEO_FETCH_TIMEOUT_MS = 15_000;
 
 function arrayBufferToBase64(buf: ArrayBuffer): string {
   const bytes = new Uint8Array(buf);
@@ -577,6 +613,42 @@ export async function fetchImageInlineData(url: string): Promise<GeminiInlineIma
   }
 }
 
+/**
+ * Many ads put the actual product identification (voiceover, on-screen
+ * demo, size/material shown in use) in the video rather than the caption —
+ * text+image extraction alone guesses blind in that case. Best-effort like
+ * the image fetcher: a slow/broken/oversized video shouldn't block
+ * extraction, it just falls back to text+images only.
+ */
+export async function fetchVideoInlineData(url: string): Promise<GeminiInlineImage | null> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), VIDEO_FETCH_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(url, { signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!res.ok) return null;
+    const mimeType = (res.headers.get("content-type") ?? "").split(";")[0]!.trim();
+    if (!mimeType.startsWith("video/")) return null;
+    const buf = await res.arrayBuffer();
+    if (buf.byteLength === 0 || buf.byteLength > MAX_INLINE_VIDEO_BYTES) return null;
+    return { mimeType, data: arrayBufferToBase64(buf) };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Video is much heavier than the two images this call previously ever sent —
+ * give it real headroom instead of the caller waiting on a fetch that has
+ * no timeout at all (an unbounded hang here would stall the whole
+ * automatic per-niche matching batch, not just one interactive click).
+ */
+const EXTRACT_SIGNAL_TIMEOUT_MS = 30_000;
+
 async function callGeminiJsonLocal(
   prompt: string,
   images: GeminiInlineImage[] = [],
@@ -587,30 +659,38 @@ async function callGeminiJsonLocal(
     ...images.map((img) => ({ inlineData: { mimeType: img.mimeType, data: img.data } })),
     { text: prompt },
   ];
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_FLASH_MODEL}:generateContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ parts }],
-        generationConfig: {
-          responseMimeType: "application/json",
-          // gemini-3.6-flash is a thinking model — its reasoning tokens come
-          // out of this same budget. 512 was silently starving the actual
-          // answer: the model spent the whole budget "thinking" about the
-          // classification + multi-field extraction task and got cut off
-          // (finishReason MAX_TOKENS) before ever emitting JSON, leaving a
-          // stray thought fragment that failed to parse — every extraction
-          // silently fell back to the low-quality heuristic. thinkingLevel
-          // "low" plus headroom fixes it (confirmed: STOP with ~100 answer
-          // tokens instead of MAX_TOKENS with ~500 thinking tokens).
-          maxOutputTokens: 2048,
-          thinkingConfig: { thinkingLevel: "low" },
-        },
-      }),
-    },
-  );
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), EXTRACT_SIGNAL_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_FLASH_MODEL}:generateContent?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          contents: [{ parts }],
+          generationConfig: {
+            responseMimeType: "application/json",
+            // gemini-3.6-flash is a thinking model — its reasoning tokens come
+            // out of this same budget. 512 was silently starving the actual
+            // answer: the model spent the whole budget "thinking" about the
+            // classification + multi-field extraction task and got cut off
+            // (finishReason MAX_TOKENS) before ever emitting JSON, leaving a
+            // stray thought fragment that failed to parse — every extraction
+            // silently fell back to the low-quality heuristic. thinkingLevel
+            // "low" plus headroom fixes it (confirmed: STOP with ~100 answer
+            // tokens instead of MAX_TOKENS with ~500 thinking tokens).
+            maxOutputTokens: 2048,
+            thinkingConfig: { thinkingLevel: "low" },
+          },
+        }),
+      },
+    );
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(`Gemini HTTP ${res.status}: ${body.slice(0, 200)}`);
@@ -659,6 +739,7 @@ function buildExtractProductSignalPrompt(
   pageName: string,
   body: string,
   hasImages: boolean,
+  hasVideo: boolean,
 ): string {
   return `Analizá este anuncio de Meta (Facebook/Instagram) de Argentina.
 
@@ -667,6 +748,10 @@ Texto del anuncio: ${body.slice(0, 500)}
 ${
     hasImages
       ? "\nTambién se adjuntan una o más imágenes reales del anuncio — usalas junto con el texto para identificar el producto exacto (marca, tipo, variante, material) que se ve en la foto, sobre todo si el texto es un gancho de marketing genérico que no lo nombra con claridad.\n"
+      : ""
+  }${
+    hasVideo
+      ? "\nTambién se adjunta el video real del anuncio — en muchos anuncios el producto solo se identifica ahí (voz en off, demostración en uso, texto en pantalla, tamaño/material que se ve al usarlo), aunque el texto y las imágenes sean genéricos. Priorizá lo que se ve/escucha en el video si contradice o completa lo que dice el texto.\n"
       : ""
   }
 Paso 1: ¿Promociona un PRODUCTO FÍSICO concreto — un objeto tangible que se pueda importar y revender? ¿O es otra cosa: app, curso online, programa de entrenamiento/coaching, servicio, suscripción, evento, inmueble, franquicia, contenido digital?
@@ -754,22 +839,30 @@ export async function extractProductSignalWithGemini(
   pageName: string,
   body: string,
   mediaUrls: string[] = [],
+  videoUrl?: string,
 ): Promise<ExtractedProductSignal | null> {
-  const images = (
-    await Promise.all(
-      mediaUrls.slice(0, MAX_EXTRACT_IMAGES).map(fetchImageInlineData),
-    )
-  ).filter((img): img is GeminiInlineImage => img != null);
-  const prompt = buildExtractProductSignalPrompt(pageName, body, images.length > 0);
+  const [images, video] = await Promise.all([
+    Promise.all(mediaUrls.slice(0, MAX_EXTRACT_IMAGES).map(fetchImageInlineData)).then(
+      (results) => results.filter((img): img is GeminiInlineImage => img != null),
+    ),
+    videoUrl ? fetchVideoInlineData(videoUrl) : Promise.resolve(null),
+  ]);
+  const media = video ? [...images, video] : images;
+  const prompt = buildExtractProductSignalPrompt(
+    pageName,
+    body,
+    images.length > 0,
+    video != null,
+  );
   try {
-    return parseExtractedProductSignal(await callGeminiJsonLocal(prompt, images));
+    return parseExtractedProductSignal(await callGeminiJsonLocal(prompt, media));
   } catch {
     // Single retry, no backoff — this backs an interactive click with a
     // request timeout budget, not a batch job. A transient network blip
     // or 429 shouldn't force the low-quality heuristic fallback if a
     // second attempt would succeed.
     try {
-      return parseExtractedProductSignal(await callGeminiJsonLocal(prompt, images));
+      return parseExtractedProductSignal(await callGeminiJsonLocal(prompt, media));
     } catch (err) {
       structuredLog({
         source: "gemini_extract_signal",
@@ -1152,6 +1245,7 @@ export const investigateAd = action({
           adBasic.pageName,
           adBasic.body ?? "",
           adBasic.mediaUrls,
+          adBasic.videoUrl,
         );
         if (extracted && !extracted.isPhysicalProduct) {
           // "We have the ad — what's the product?" Sometimes there isn't

@@ -22,8 +22,13 @@ import {
 } from "../lib/nicheProfile";
 
 const AR = "AR";
-/** Below this, enqueue / keep scrape pending. */
-const MIN_ADS_READY = 5;
+/**
+ * Below this, enqueue / keep scrape pending — a niche is not "ready" either.
+ * Raised from 5: the feed shows a fixed top FEED_SIZE=10 (metaAds.ts), and
+ * this counts gate-passed ads BEFORE the Gemini relevance pass drops some
+ * fraction of them — 10 raw gives a realistic shot at 10 kept, 5 rarely did.
+ */
+export const MIN_ADS_READY = 10;
 
 const nicheStatusValidator = v.union(
   v.literal("ready"),
@@ -73,7 +78,10 @@ async function createScrapeJob(
   const jobId = await ctx.db.insert("radarNicheScrapeJobs", {
     nicheId,
     terms,
-    status: "pending",
+    // Not claimable yet — enrichNicheScrapeTerms flips this to "pending"
+    // (success or failure) once it's done expanding `terms` past the raw
+    // keyword phrase.
+    status: "enriching",
     createdAt: Date.now(),
   });
   await ctx.scheduler.runAfter(
@@ -124,28 +132,28 @@ async function findSimilarNiche(
   return bestId;
 }
 
-async function enqueueScrapeIfNeeded(
+export async function enqueueScrapeIfNeeded(
   ctx: MutationCtx,
   nicheId: Id<"radarNiches">,
   description?: string,
-): Promise<void> {
+): Promise<boolean> {
   const niche = await ctx.db.get(nicheId);
-  if (!niche) return;
+  if (!niche) return false;
 
-  if (niche.status === "ready" && niche.adCount >= MIN_ADS_READY) return;
-  if (niche.status === "scraping") return;
+  if (niche.status === "ready" && niche.adCount >= MIN_ADS_READY) return false;
+  if (niche.status === "scraping") return false;
 
-  const pending = await ctx.db
-    .query("radarNicheScrapeJobs")
-    .withIndex("by_status_created", (q) => q.eq("status", "pending"))
-    .take(40);
-  if (pending.some((j) => j.nicheId === nicheId)) return;
-
-  const claimed = await ctx.db
-    .query("radarNicheScrapeJobs")
-    .withIndex("by_status_created", (q) => q.eq("status", "claimed"))
-    .take(40);
-  if (claimed.some((j) => j.nicheId === nicheId)) return;
+  // A job already in flight for this niche — enriching, waiting to be
+  // claimed, or claimed — means don't queue a duplicate.
+  for (const status of ["enriching", "pending", "claimed"] as const) {
+    const existing = await ctx.db
+      .query("radarNicheScrapeJobs")
+      .withIndex("by_niche_status", (q) =>
+        q.eq("nicheId", nicheId).eq("status", status),
+      )
+      .first();
+    if (existing) return false;
+  }
 
   await createScrapeJob(ctx, nicheId, jobTermsFromNiche(niche), description);
 
@@ -155,6 +163,7 @@ async function enqueueScrapeIfNeeded(
       updatedAt: Date.now(),
     });
   }
+  return true;
 }
 
 /**
@@ -320,13 +329,16 @@ export const forceEnqueueScrapeJobs = mutation({
     let enqueued = 0;
 
     for (const niche of niches) {
-      // Unstick claimed jobs so force can proceed.
-      const claimed = await ctx.db
-        .query("radarNicheScrapeJobs")
-        .withIndex("by_status_created", (q) => q.eq("status", "claimed"))
-        .take(40);
-      for (const job of claimed) {
-        if (job.nicheId === niche._id) {
+      // Unstick claimed (mid-scrape) or enriching (stuck term-expansion)
+      // jobs so force can proceed.
+      for (const status of ["claimed", "enriching"] as const) {
+        const stuck = await ctx.db
+          .query("radarNicheScrapeJobs")
+          .withIndex("by_niche_status", (q) =>
+            q.eq("nicheId", niche._id).eq("status", status),
+          )
+          .collect();
+        for (const job of stuck) {
           await ctx.db.patch(job._id, {
             status: "failed",
             finishedAt: now,
@@ -337,9 +349,11 @@ export const forceEnqueueScrapeJobs = mutation({
 
       const pending = await ctx.db
         .query("radarNicheScrapeJobs")
-        .withIndex("by_status_created", (q) => q.eq("status", "pending"))
-        .take(40);
-      if (pending.some((j) => j.nicheId === niche._id)) {
+        .withIndex("by_niche_status", (q) =>
+          q.eq("nicheId", niche._id).eq("status", "pending"),
+        )
+        .first();
+      if (pending) {
         nicheIds.push(niche._id);
         continue;
       }
@@ -459,7 +473,7 @@ export const completeScrapeJob = mutation({
       await ctx.db.patch(niche._id, {
         adCount: linkCount,
         lastScrapedAt: now,
-        status: linkCount > 0 ? "ready" : "pending_scrape",
+        status: linkCount >= MIN_ADS_READY ? "ready" : "pending_scrape",
         updatedAt: now,
       });
     }
@@ -467,47 +481,71 @@ export const completeScrapeJob = mutation({
   },
 });
 
-export const linkAdsToNiche = internalMutation({
-  args: {
-    nicheId: v.id("radarNiches"),
-    adIds: v.array(v.id("radarAds")),
-    searchTerm: v.optional(v.string()),
+/**
+ * Periodic sweep: re-enqueue any niche stuck below MIN_ADS_READY that isn't
+ * already scraping or queued. Covers niches whose only scrape landed too few
+ * gate-passing ads and that no new user has attached to since (previously
+ * these only got re-enqueued when a new user joined the same niche).
+ */
+export const sweepUnderfilledNiches = internalMutation({
+  args: {},
+  returns: v.object({ enqueued: v.number() }),
+  handler: async (ctx) => {
+    const candidates = await ctx.db
+      .query("radarNiches")
+      .withIndex("by_status", (q) => q.eq("status", "pending_scrape"))
+      .take(50);
+
+    let enqueued = 0;
+    for (const niche of candidates) {
+      if (await enqueueScrapeIfNeeded(ctx, niche._id)) enqueued += 1;
+    }
+    return { enqueued };
   },
-  returns: v.object({ linked: v.number() }),
-  handler: async (ctx, args) => {
-    const now = Date.now();
-    let linked = 0;
-    for (const adId of args.adIds) {
-      const existing = await ctx.db
-        .query("radarNicheAds")
-        .withIndex("by_niche_ad", (q) =>
-          q.eq("nicheId", args.nicheId).eq("adId", adId),
-        )
-        .unique();
-      if (existing) continue;
-      await ctx.db.insert("radarNicheAds", {
-        nicheId: args.nicheId,
-        adId,
-        searchTerm: args.searchTerm,
-        linkedAt: now,
+});
+
+/**
+ * Daily freshness sweep: re-enqueue every "ready" niche too, not just
+ * under-filled ones — enqueueScrapeIfNeeded deliberately refuses to touch a
+ * niche that's already ready (to avoid re-scraping on every user visit), so
+ * without this a niche that reached "ready" once would never get scraped
+ * again and could show increasingly stale ads indefinitely. Bounded to 200
+ * niches per run — needs real pagination if the niche count grows well
+ * past that.
+ */
+export const refreshAllReadyNiches = internalMutation({
+  args: {},
+  returns: v.object({ enqueued: v.number() }),
+  handler: async (ctx) => {
+    const readyNiches = await ctx.db
+      .query("radarNiches")
+      .withIndex("by_status", (q) => q.eq("status", "ready"))
+      .take(200);
+
+    let enqueued = 0;
+    for (const niche of readyNiches) {
+      let hasJobInFlight = false;
+      for (const status of ["enriching", "pending", "claimed"] as const) {
+        const existing = await ctx.db
+          .query("radarNicheScrapeJobs")
+          .withIndex("by_niche_status", (q) =>
+            q.eq("nicheId", niche._id).eq("status", status),
+          )
+          .first();
+        if (existing) {
+          hasJobInFlight = true;
+          break;
+        }
+      }
+      if (hasJobInFlight) continue;
+
+      await createScrapeJob(ctx, niche._id, jobTermsFromNiche(niche));
+      await ctx.db.patch(niche._id, {
+        status: "pending_scrape",
+        updatedAt: Date.now(),
       });
-      linked += 1;
+      enqueued += 1;
     }
-    const niche = await ctx.db.get(args.nicheId);
-    if (niche) {
-      const total = (
-        await ctx.db
-          .query("radarNicheAds")
-          .withIndex("by_niche", (q) => q.eq("nicheId", args.nicheId))
-          .take(1000)
-      ).length;
-      await ctx.db.patch(args.nicheId, {
-        adCount: total,
-        lastScrapedAt: now,
-        status: total > 0 ? "ready" : niche.status,
-        updatedAt: now,
-      });
-    }
-    return { linked };
+    return { enqueued };
   },
 });
