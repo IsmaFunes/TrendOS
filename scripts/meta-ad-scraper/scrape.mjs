@@ -501,6 +501,39 @@ async function forceEnqueue(nicheId) {
   return result;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * A freshly (force-)enqueued job starts "enriching" — not yet claimable —
+ * until Gemini finishes expanding its search terms (convex/radar/niches.ts
+ * createScrapeJob, convex/radar/geminiAds.ts enrichNicheScrapeTerms).
+ * That's usually a few seconds but can take up to ~80s in the worst case
+ * (retries on a slow Gemini response). Claiming exactly once right after
+ * forceEnqueue() reliably lost this race — "Force-enqueued 1 job(s)"
+ * immediately followed by "No pending niche scrape jobs." — so retry with
+ * backoff instead of giving up on the very first attempt.
+ */
+async function claimWithRetryForForce(client, secret, targetNicheId) {
+  const maxWaitMs = 90_000;
+  let delayMs = 2_000;
+  const start = Date.now();
+  for (;;) {
+    const job = await client.mutation(anyApi.radar.niches.claimNextScrapeJob, {
+      secret,
+      nicheId: targetNicheId,
+    });
+    if (job) return job;
+    if (Date.now() - start >= maxWaitMs) return null;
+    console.log(
+      `  Job still enriching search terms, retrying in ${delayMs / 1000}s...`,
+    );
+    await sleep(delayMs);
+    delayMs = Math.min(delayMs * 1.5, 8_000);
+  }
+}
+
 async function runQueue(args, debug) {
   const { client, secret } = clientAndSecret();
   // --force-niche means "run this niche" — claim its job specifically so an
@@ -515,10 +548,13 @@ async function runQueue(args, debug) {
   let processed = 0;
   try {
     for (let i = 0; i < args.maxJobs; i++) {
-      const job = await client.mutation(anyApi.radar.niches.claimNextScrapeJob, {
-        secret,
-        nicheId: targetNicheId,
-      });
+      const job =
+        args.force && i === 0
+          ? await claimWithRetryForForce(client, secret, targetNicheId)
+          : await client.mutation(anyApi.radar.niches.claimNextScrapeJob, {
+              secret,
+              nicheId: targetNicheId,
+            });
       if (!job) {
         console.log(i === 0 ? "No pending niche scrape jobs." : "Queue empty.");
         break;
