@@ -3,23 +3,14 @@ import { internal } from "./_generated/api";
 
 const crons = cronJobs();
 
-// Meta Ad Library scrape is driven by the external worker + enqueue from onboarding.
-// This sweep re-queues niches stuck below MIN_ADS_READY that no new user has
-// attached to since their last (under-filled) scrape.
+// Fixed niche catalog: one scrape job per (active niche, country) pair,
+// every 24h. The GitHub Actions scheduled workflow
+// (.github/workflows/scrape-meta-ads.yml, polling every 15 min) is what
+// actually runs the Playwright worker that claims and completes these jobs.
 crons.interval(
-  "sweep underfilled niches",
-  { hours: 6 },
-  internal.radar.niches.sweepUnderfilledNiches,
-  {},
-);
-
-// Keeps already-"ready" niches from going stale indefinitely — pairs with
-// the GitHub Actions scheduled workflow (.github/workflows/scrape-meta-ads.yml)
-// that actually runs the Playwright worker to claim the jobs this queues.
-crons.interval(
-  "refresh all ready niches",
+  "enqueue daily niche scrape jobs",
   { hours: 24 },
-  internal.radar.niches.refreshAllReadyNiches,
+  internal.radar.niches.enqueueDailyScrapeJobs,
   {},
 );
 

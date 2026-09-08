@@ -8,8 +8,8 @@
  * @module
  */
 
-import type * as admin_regateNiches from "../admin/regateNiches.js";
 import type * as admin_resetAdsPipeline from "../admin/resetAdsPipeline.js";
+import type * as admin_seedNicheCatalog from "../admin/seedNicheCatalog.js";
 import type * as admin_wipeAll from "../admin/wipeAll.js";
 import type * as categories from "../categories.js";
 import type * as crons from "../crons.js";
@@ -62,8 +62,8 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
-  "admin/regateNiches": typeof admin_regateNiches;
   "admin/resetAdsPipeline": typeof admin_resetAdsPipeline;
+  "admin/seedNicheCatalog": typeof admin_seedNicheCatalog;
   "admin/wipeAll": typeof admin_wipeAll;
   categories: typeof categories;
   crons: typeof crons;

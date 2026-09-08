@@ -6,10 +6,10 @@
 import { v } from "convex/values";
 import {
   internalMutation,
-  internalQuery,
   mutation,
   query,
   type MutationCtx,
+  type QueryCtx,
 } from "../_generated/server";
 import type { Id } from "../_generated/dataModel";
 import { internal } from "../_generated/api";
@@ -18,21 +18,15 @@ import {
   normalizeForSubstringMatch,
   passesNicheAdGate,
 } from "./adRelevance";
-import { MIN_ADS_READY } from "./niches";
+import { flattenedGateTerms, MIN_ADS_READY } from "./niches";
 import { scoreStoreQuality } from "./investigate";
 
 /** Ads below this Gemini relevance score are never shown, any sort mode. */
 const MIN_RELEVANCE_SCORE = 45;
 
 const AR = "AR";
-
-export const OFFER_HOOK_SEEDS = [
-  "envio gratis",
-  "2x1",
-  "cuotas sin interes",
-  "tres por uno",
-  "uno de regalo",
-] as const;
+/** Countries the scraper is allowed to ingest ads for (convex/admin/seedNicheCatalog.ts). */
+export const SCRAPE_COUNTRIES = ["AR", "US", "BR", "MX", "ES"] as const;
 
 const adReturnValidator = v.object({
   _id: v.id("radarAds"),
@@ -119,17 +113,6 @@ function isDisplayableAd(ad: {
   return true;
 }
 
-function nicheKeywordsForGate(
-  niche: { keywords: string[]; scrapeTerms?: string[] } | null,
-  profileKeywords?: string[],
-): string[] {
-  return [
-    ...(profileKeywords ?? []),
-    ...(niche?.keywords ?? []),
-    ...(niche?.scrapeTerms ?? []),
-  ];
-}
-
 function sanitizeBody(body: string | undefined): string | undefined {
   const t = body?.trim();
   if (!t) return undefined;
@@ -192,8 +175,8 @@ async function upsertAdsBatch(
   ads: ScrapedAd[],
   nicheId?: Id<"radarNiches">,
 ): Promise<{ upserted: number; advertisersTouched: number; linked: number }> {
-  if (country !== AR) {
-    throw new Error("MVP only supports country=AR");
+  if (!(SCRAPE_COUNTRIES as readonly string[]).includes(country)) {
+    throw new Error(`Unsupported scrape country: ${country}`);
   }
   const now = Date.now();
   let upserted = 0;
@@ -203,7 +186,7 @@ async function upsertAdsBatch(
     { pageName: string; active: number; total: number }
   >();
   const nicheDoc = nicheId ? await ctx.db.get(nicheId) : null;
-  const gateKeywords = nicheKeywordsForGate(nicheDoc, nicheDoc?.keywords);
+  const gateKeywords = nicheDoc ? flattenedGateTerms(nicheDoc) : [];
 
   for (const ad of ads) {
     const existing = await ctx.db
@@ -356,8 +339,8 @@ async function upsertAdsBatch(
       // pass so listAdsForUser's mandatory gate has an up-to-date judgment
       // instead of serving a stale one (or none) until the next scrape.
       // force:true because the freshness cache is keyed on the niche's
-      // fingerprint (keywords/scrapeTerms/label), which a re-scrape with
-      // the SAME terms doesn't change — without force, newly-linked ads
+      // fingerprint (gate terms/label), which a re-scrape with the same
+      // curated terms doesn't change — without force, newly-linked ads
       // would silently never get judged until the 24h TTL expires.
       if (linked > 0) {
         await ctx.scheduler.runAfter(
@@ -441,30 +424,8 @@ export const listAdsForUser = query({
       .query("businessProfiles")
       .withIndex("by_user", (q) => q.eq("userId", user._id))
       .unique();
-    if (!profile?.nicheId) return [];
+    if (!profile || profile.nicheIds.length === 0) return [];
 
-    // Mandatory, niche-shared relevance gate — an ad the niche's relevance
-    // pass hasn't explicitly kept (score >= MIN_RELEVANCE_SCORE) is never
-    // shown, in ANY sort mode. If the niche has no relevance pass at all
-    // yet, show nothing rather than falling back to the loose heuristic
-    // gate alone (getAdsFeedState surfaces this as "relevance_pending").
-    const relevance = await ctx.db
-      .query("radarNicheAdRelevance")
-      .withIndex("by_niche", (q) => q.eq("nicheId", profile.nicheId!))
-      .unique();
-    if (!relevance) return [];
-    const scoreById = new Map(
-      relevance.ranked.map((r) => [String(r.adId), r]),
-    );
-
-    const links = await ctx.db
-      .query("radarNicheAds")
-      .withIndex("by_niche", (q) => q.eq("nicheId", profile.nicheId!))
-      .take(400);
-
-    const excluded = (profile.excludedKeywords ?? []).map((k) =>
-      normalizeForSubstringMatch(k),
-    );
     const search = args.search
       ? normalizeForSubstringMatch(args.search.trim())
       : undefined;
@@ -473,57 +434,83 @@ export const listAdsForUser = query({
     const limit = Math.min(args.limit ?? 48, 100);
     const sort = args.sort ?? "quality";
 
-    const niche = await ctx.db.get(profile.nicheId!);
-    const gateKeywords = nicheKeywordsForGate(niche, profile.nicheKeywords);
-
     const ads = [];
-    for (const link of links) {
-      const ad = await ctx.db.get(link.adId);
-      if (!ad || ad.country !== AR) continue;
-      if (!isDisplayableAd(ad)) continue;
-      if (
-        !passesNicheAdGate(
-          {
-            pageName: ad.pageName,
-            body: ad.body,
-            mediaUrls: ad.mediaUrls,
-            destinationUrl: ad.destinationUrl,
-            searchTerm: ad.searchTerm,
-          },
-          gateKeywords,
-        )
-      ) {
-        continue;
-      }
-      const ranked = scoreById.get(String(ad._id));
-      if (!ranked || ranked.score < MIN_RELEVANCE_SCORE) continue;
-      const hay = normalizeForSubstringMatch(
-        `${ad.pageName} ${ad.body ?? ""} ${ad.searchTerm ?? ""}`,
-      );
-      if (excluded.some((ex) => hay.includes(ex))) continue;
-      if (search && !hay.includes(search)) continue;
-      const adActiveDays = activeDays(ad.startedAt, ad.lastSeenAt);
-      const advertiser = await ctx.db
-        .query("radarAdvertisers")
-        .withIndex("by_page", (q) => q.eq("pageId", ad.pageId))
+    const seenAdIds = new Set<string>();
+    for (const nicheId of profile.nicheIds) {
+      const niche = await ctx.db.get(nicheId);
+      if (!niche) continue;
+      const gateKeywords = flattenedGateTerms(niche);
+
+      // Mandatory, niche-shared relevance gate — an ad the niche's
+      // relevance pass hasn't explicitly kept (score >= MIN_RELEVANCE_SCORE)
+      // is never shown, in ANY sort mode. If the niche has no relevance
+      // pass yet, it contributes nothing (getAdsFeedState surfaces this as
+      // "relevance_pending") rather than falling back to the heuristic gate
+      // alone.
+      const relevance = await ctx.db
+        .query("radarNicheAdRelevance")
+        .withIndex("by_niche", (q) => q.eq("nicheId", nicheId))
         .unique();
-      const store = ad.storeId ? await ctx.db.get(ad.storeId) : null;
-      const quality = scoreStoreQuality({
-        hasStore: Boolean(store),
-        platform: store?.platform,
-        activeAdCount: advertiser?.activeAdCount,
-        totalAdCount: advertiser?.totalAdCount,
-        adActiveDays,
-      });
-      ads.push({
-        ...ad,
-        activeDays: adActiveDays,
-        rankScore: ranked.score,
-        rankReason: ranked.reason,
-        storeQualityScore: quality.score,
-        storeQualityLabel: quality.label,
-        advertiserActiveAdCount: advertiser?.activeAdCount,
-      });
+      if (!relevance) continue;
+      const scoreById = new Map(
+        relevance.ranked.map((r) => [String(r.adId), r]),
+      );
+
+      const links = await ctx.db
+        .query("radarNicheAds")
+        .withIndex("by_niche", (q) => q.eq("nicheId", nicheId))
+        .take(400);
+
+      for (const link of links) {
+        const adKey = String(link.adId);
+        if (seenAdIds.has(adKey)) continue;
+        const ad = await ctx.db.get(link.adId);
+        if (!ad) continue;
+        if (!isDisplayableAd(ad)) continue;
+        if (
+          !passesNicheAdGate(
+            {
+              pageName: ad.pageName,
+              body: ad.body,
+              mediaUrls: ad.mediaUrls,
+              destinationUrl: ad.destinationUrl,
+              searchTerm: ad.searchTerm,
+            },
+            gateKeywords,
+          )
+        ) {
+          continue;
+        }
+        const ranked = scoreById.get(adKey);
+        if (!ranked || ranked.score < MIN_RELEVANCE_SCORE) continue;
+        const hay = normalizeForSubstringMatch(
+          `${ad.pageName} ${ad.body ?? ""} ${ad.searchTerm ?? ""}`,
+        );
+        if (search && !hay.includes(search)) continue;
+        seenAdIds.add(adKey);
+        const adActiveDays = activeDays(ad.startedAt, ad.lastSeenAt);
+        const advertiser = await ctx.db
+          .query("radarAdvertisers")
+          .withIndex("by_page", (q) => q.eq("pageId", ad.pageId))
+          .unique();
+        const store = ad.storeId ? await ctx.db.get(ad.storeId) : null;
+        const quality = scoreStoreQuality({
+          hasStore: Boolean(store),
+          platform: store?.platform,
+          activeAdCount: advertiser?.activeAdCount,
+          totalAdCount: advertiser?.totalAdCount,
+          adActiveDays,
+        });
+        ads.push({
+          ...ad,
+          activeDays: adActiveDays,
+          rankScore: ranked.score,
+          rankReason: ranked.reason,
+          storeQualityScore: quality.score,
+          storeQualityLabel: quality.label,
+          advertiserActiveAdCount: advertiser?.activeAdCount,
+        });
+      }
     }
 
     ads.sort((a, b) => {
@@ -542,78 +529,112 @@ export const listAdsForUser = query({
   },
 });
 
-/** UI helper: niche scrape + relevance-pass status for empty states. */
+const feedNicheStatusValidator = v.union(
+  v.literal("pending_scrape"),
+  v.literal("scraping"),
+  v.literal("relevance_pending"),
+  v.literal("ready"),
+  v.literal("empty"),
+);
+
+async function nicheFeedState(
+  ctx: { db: QueryCtx["db"] },
+  niche: { _id: Id<"radarNiches">; label: string; status: string; adCount: number },
+): Promise<{
+  nicheId: Id<"radarNiches">;
+  nicheLabel: string;
+  status: "pending_scrape" | "scraping" | "relevance_pending" | "ready" | "empty";
+  adCount: number;
+}> {
+  if (niche.status === "pending_scrape" || niche.status === "scraping") {
+    return {
+      nicheId: niche._id,
+      nicheLabel: niche.label,
+      status: niche.status,
+      adCount: niche.adCount,
+    };
+  }
+  // niche.status === "ready" — but the feed itself is gated on a completed
+  // relevance pass, which can lag behind niche readiness (e.g. right after
+  // Gemini is momentarily unavailable).
+  const relevance = await ctx.db
+    .query("radarNicheAdRelevance")
+    .withIndex("by_niche", (q) => q.eq("nicheId", niche._id))
+    .unique();
+  if (!relevance) {
+    return {
+      nicheId: niche._id,
+      nicheLabel: niche.label,
+      status: "relevance_pending",
+      adCount: niche.adCount,
+    };
+  }
+  const keptCount = relevance.ranked.filter(
+    (r) => r.score >= MIN_RELEVANCE_SCORE,
+  ).length;
+  return {
+    nicheId: niche._id,
+    nicheLabel: niche.label,
+    status: keptCount === 0 ? "empty" : "ready",
+    adCount: keptCount,
+  };
+}
+
+/** UI helper: per-niche scrape + relevance-pass status for empty states. */
 export const getAdsFeedState = query({
   args: {},
   returns: v.object({
-    nicheId: v.union(v.id("radarNiches"), v.null()),
-    nicheLabel: v.optional(v.string()),
-    status: v.union(
-      v.literal("no_niche"),
-      v.literal("pending_scrape"),
-      v.literal("scraping"),
-      v.literal("relevance_pending"),
-      v.literal("ready"),
-      v.literal("empty"),
+    niches: v.array(
+      v.object({
+        nicheId: v.id("radarNiches"),
+        nicheLabel: v.string(),
+        status: feedNicheStatusValidator,
+        adCount: v.number(),
+      }),
     ),
+    status: v.union(v.literal("no_niche"), feedNicheStatusValidator),
+    nicheLabel: v.optional(v.string()),
     adCount: v.number(),
   }),
   handler: async (ctx) => {
     const user = await getCurrentUserOrNull(ctx);
     if (!user) {
-      return { nicheId: null, status: "no_niche" as const, adCount: 0 };
+      return { niches: [], status: "no_niche" as const, adCount: 0 };
     }
     const profile = await ctx.db
       .query("businessProfiles")
       .withIndex("by_user", (q) => q.eq("userId", user._id))
       .unique();
-    if (!profile?.nicheId) {
-      return { nicheId: null, status: "no_niche" as const, adCount: 0 };
+    if (!profile || profile.nicheIds.length === 0) {
+      return { niches: [], status: "no_niche" as const, adCount: 0 };
     }
-    const niche = await ctx.db.get(profile.nicheId);
-    if (!niche) {
-      return { nicheId: null, status: "no_niche" as const, adCount: 0 };
+
+    const niches = [];
+    for (const nicheId of profile.nicheIds) {
+      const niche = await ctx.db.get(nicheId);
+      if (!niche) continue;
+      niches.push(await nicheFeedState(ctx, niche));
     }
-    if (niche.status === "pending_scrape" || niche.status === "scraping") {
-      return {
-        nicheId: niche._id,
-        nicheLabel: niche.label,
-        status: niche.status,
-        adCount: niche.adCount,
-      };
+    if (niches.length === 0) {
+      return { niches: [], status: "no_niche" as const, adCount: 0 };
     }
-    // niche.status === "ready" — but the feed itself is gated on a
-    // completed relevance pass, which can lag behind niche readiness
-    // (e.g. right after Gemini is momentarily unavailable, or for a niche
-    // that predates this gate and hasn't been re-scraped yet).
-    const relevance = await ctx.db
-      .query("radarNicheAdRelevance")
-      .withIndex("by_niche", (q) => q.eq("nicheId", niche._id))
-      .unique();
-    if (!relevance) {
-      return {
-        nicheId: niche._id,
-        nicheLabel: niche.label,
-        status: "relevance_pending" as const,
-        adCount: niche.adCount,
-      };
+
+    // Show ads as soon as ANY of the user's niches is ready — only surface
+    // a waiting/empty message when none of them are.
+    const ready = niches.find((n) => n.status === "ready");
+    if (ready) {
+      const adCount = niches.reduce(
+        (sum, n) => sum + (n.status === "ready" ? n.adCount : 0),
+        0,
+      );
+      return { niches, status: "ready" as const, nicheLabel: ready.nicheLabel, adCount };
     }
-    const keptCount = relevance.ranked.filter(
-      (r) => r.score >= MIN_RELEVANCE_SCORE,
-    ).length;
-    if (keptCount === 0) {
-      return {
-        nicheId: niche._id,
-        nicheLabel: niche.label,
-        status: "empty" as const,
-        adCount: 0,
-      };
-    }
+    const first = niches[0];
     return {
-      nicheId: niche._id,
-      nicheLabel: niche.label,
-      status: "ready" as const,
-      adCount: keptCount,
+      niches,
+      status: first.status,
+      nicheLabel: first.nicheLabel,
+      adCount: first.adCount,
     };
   },
 });
@@ -625,7 +646,7 @@ export const getAd = query({
     const user = await getCurrentUserOrNull(ctx);
     if (!user) return null;
     const ad = await ctx.db.get(args.adId);
-    if (!ad || ad.country !== AR) return null;
+    if (!ad) return null;
 
     const adActiveDays = activeDays(ad.startedAt, ad.lastSeenAt);
     const advertiser = await ctx.db
@@ -651,26 +672,3 @@ export const getAd = query({
   },
 });
 
-export const listScrapeSeedTerms = internalQuery({
-  args: {},
-  returns: v.array(
-    v.object({
-      term: v.string(),
-      country: v.string(),
-    }),
-  ),
-  handler: async (ctx) => {
-    const seeds = new Set<string>([...OFFER_HOOK_SEEDS]);
-    const profiles = await ctx.db.query("businessProfiles").take(50);
-    for (const p of profiles) {
-      for (const kw of p.nicheKeywords ?? []) {
-        const t = kw.trim().toLowerCase();
-        if (t) seeds.add(t);
-      }
-    }
-    return [...seeds].slice(0, 40).map((term) => ({
-      term,
-      country: AR,
-    }));
-  },
-});

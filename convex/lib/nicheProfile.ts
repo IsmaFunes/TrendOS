@@ -143,32 +143,6 @@ export function hasNicheSignal(input: NicheInput): boolean {
   return keywords.length > 0 || description !== undefined;
 }
 
-/**
- * Stable fingerprint for cache sharing across users with the same niche.
- * Empty niche → "" (baseline; not used for personalized research).
- */
-export function computeNicheKey(input: NicheInput): string {
-  const keywords = normalizeNicheKeywords(input.keywords)
-    .map((k) => normalizeProductName(k))
-    .filter(Boolean)
-    .sort();
-  const description = clampNicheDescription(input.description);
-  const descNorm = description ? normalizeProductName(description) : "";
-  if (keywords.length === 0 && !descNorm) return "";
-
-  const payload = `${keywords.join("|")}::${descNorm}`;
-  return simpleHash(payload);
-}
-
-function simpleHash(s: string): string {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return (h >>> 0).toString(36);
-}
-
 export function nicheTokenSet(input: NicheInput): Set<string> {
   const keywords = normalizeNicheKeywords(input.keywords);
   const description = clampNicheDescription(input.description);
@@ -185,19 +159,6 @@ export function nicheTokenSet(input: NicheInput): Set<string> {
   }
   return set;
 }
-
-/** Jaccard similarity between two niche inputs (0–1). */
-export function nicheSimilarity(a: NicheInput, b: NicheInput): number {
-  return jaccard(nicheTokenSet(a), nicheTokenSet(b));
-}
-
-/**
- * Minimum Jaccard to reuse an existing niche bucket. Niches carry at most 3
- * keywords, so token sets are small and Jaccard is coarse — a single shared
- * token can already clear a loose bar and silently merge two unrelated
- * businesses' ad pools. Kept relatively strict for that reason.
- */
-export const NICHE_REUSE_SIMILARITY_MIN = 0.72;
 
 function keywordHitsTitle(keyword: string, titleNorm: string): boolean {
   const kwNorm = normalizeProductName(keyword);

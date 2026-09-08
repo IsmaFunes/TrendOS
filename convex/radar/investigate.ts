@@ -27,6 +27,7 @@ import {
 } from "./normalize";
 import { AUTO_MERGE_THRESHOLD, MANUAL_REVIEW_THRESHOLD } from "./matching";
 import { nicheRelevance } from "../lib/nicheProfile";
+import { flattenedGateTerms } from "./niches";
 import { calculateMargin } from "./logistics";
 import { getCurrentUserOrNull } from "../lib/auth";
 import { searchMadeInChina } from "./providers/chinaB2b";
@@ -55,7 +56,6 @@ import {
   type DataSource,
 } from "./validators";
 
-const AR = "AR";
 const INVESTIGATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const CANDIDATE_AD_POOL = 250;
 const SIMILAR_AD_SHORTLIST = 6;
@@ -1020,7 +1020,7 @@ export const loadInvestigateContext = internalQuery({
   returns: investigateContextValidator,
   handler: async (ctx, args) => {
     const ad = await ctx.db.get(args.adId);
-    if (!ad || ad.country !== AR) return null;
+    if (!ad) return null;
 
     const [store, advertiser, profileDoc] = await Promise.all([
       ad.storeId ? ctx.db.get(ad.storeId) : Promise.resolve(null),
@@ -1034,6 +1034,17 @@ export const loadInvestigateContext = internalQuery({
         .unique(),
     ]);
 
+    // The store's niche is now a fixed catalog entry rather than typed
+    // keywords — flatten the curated gate terms of every niche the store
+    // follows into the same "nicheKeywords" shape the prompts below expect.
+    const nicheKeywords: string[] = [];
+    if (profileDoc) {
+      for (const nicheId of profileDoc.nicheIds) {
+        const niche = await ctx.db.get(nicheId);
+        if (niche) nicheKeywords.push(...flattenedGateTerms(niche));
+      }
+    }
+
     const adActiveDays = activeDaysBetween(ad.startedAt, ad.lastSeenAt);
     const targetQuality = scoreStoreQuality({
       hasStore: Boolean(store),
@@ -1043,11 +1054,11 @@ export const loadInvestigateContext = internalQuery({
       adActiveDays,
     });
 
+    // Not AR-only anymore — ads are scraped across several countries, and a
+    // similar ad from a different country is still a useful comparable.
     const pool = await ctx.db
       .query("radarAds")
-      .withIndex("by_active_country", (q) =>
-        q.eq("isActive", true).eq("country", AR),
-      )
+      .withIndex("by_active", (q) => q.eq("isActive", true))
       .order("desc")
       .take(CANDIDATE_AD_POOL);
 
@@ -1114,7 +1125,7 @@ export const loadInvestigateContext = internalQuery({
         storeQualityLabel: targetQuality.label,
       },
       profile: {
-        nicheKeywords: profileDoc?.nicheKeywords,
+        nicheKeywords: nicheKeywords.length ? nicheKeywords : undefined,
         description: profileDoc?.description,
       },
       similarAds,

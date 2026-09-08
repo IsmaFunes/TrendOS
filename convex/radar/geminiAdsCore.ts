@@ -51,19 +51,18 @@ export const RANKING_RESPONSE_SCHEMA = {
 } as const;
 
 /**
- * Fingerprint for the niche-shared relevance pass — deliberately keyed only
- * on niche keywords/scrapeTerms/label (not any one user's profile), since
- * this pass is computed once per niche and shared across every store in it.
+ * Fingerprint for the niche-shared relevance pass — keyed on the niche's
+ * curated gate terms (flattened across countries) and label, since this
+ * pass is computed once per fixed catalog niche and shared across every
+ * store that follows it.
  */
 export function nicheFingerprint(input: {
-  keywords: string[];
-  scrapeTerms?: string[];
+  gateTerms: string[];
   label: string;
 }): string {
   const raw = JSON.stringify({
     v: RANKING_RULES_VERSION,
-    k: [...input.keywords].map((x) => x.toLowerCase()).sort(),
-    s: [...(input.scrapeTerms ?? [])].map((x) => x.toLowerCase()).sort(),
+    k: [...input.gateTerms].map((x) => x.toLowerCase()).sort(),
     l: input.label.trim().toLowerCase(),
   });
   let h = 2166136261;
@@ -189,35 +188,36 @@ export function parseRankingResponse(
   return { ranked, droppedAdIds };
 }
 
-export function buildScrapeTermsPrompt(input: {
-  keywords: string[];
+/**
+ * One-time, seed-time localization: given a niche's hand-curated base
+ * (AR-Spanish) search terms, produce an equivalent term set for another
+ * country's ad-library language. Not called per-scrape — niches are a
+ * fixed catalog, so this only runs once when a niche is seeded/updated
+ * (convex/admin/seedNicheCatalog.ts).
+ */
+export function buildNicheTermLocalizationPrompt(input: {
+  label: string;
   description?: string;
-  label?: string;
+  baseTerms: string[];
+  targetCountry: string;
+  targetLanguage: string;
 }): string {
-  return `Sos un especialista en Meta Ad Library para ecommerce en Argentina.
-Dado el nicho de una tienda, sugerí términos de búsqueda para encontrar anuncios de PRODUCTOS CONCRETOS que la tienda realmente vendería.
+  return `Sos un especialista en Meta Ad Library para ecommerce.
+Tenés una lista de términos de búsqueda ya validados en español rioplatense (Argentina) para un nicho de producto. Tu tarea es traducirlos/adaptarlos al idioma real que usarían anuncios de ecommerce en ${input.targetCountry} (${input.targetLanguage}) — NO una traducción literal palabra por palabra, sino cómo un vendedor de ese país escribiría el mismo producto en un anuncio.
 
-Nicho keywords: ${JSON.stringify(input.keywords)}
+Nicho: ${input.label}
 Descripción: ${input.description?.trim() || "(sin descripción)"}
-Label: ${input.label ?? ""}
+Términos base (AR): ${JSON.stringify(input.baseTerms)}
+País/idioma objetivo: ${input.targetCountry} / ${input.targetLanguage}
 
-CONTEXTO CLAVE — cómo busca Meta Ad Library: la búsqueda es "keyword_unordered", es decir requiere que TODAS las palabras del término aparezcan en el texto del anuncio (en cualquier orden). Un término de 4+ palabras técnicas casi nunca matchea nada real — es la causa #1 de "0 resultados". Un término de 1-2 palabras comunes matchea muchísimo más.
-
-Paso 0 — clasificá el nicho antes de generar términos:
-- ¿Es una CATEGORÍA amplia que agrupa productos distintos? (ej. "fitness", "mates", "cocina", "decoración") → ahí sí diversificá entre sub-productos reales de esa categoría.
-- ¿Es ya un PRODUCTO ESPECÍFICO? (ej. "almohada para bebé", "termo acero inoxidable", "yerbera de cuero") → NO diversifiques hacia productos distintos de la misma área. Quedate en variantes/sinónimos/tipos de ESE MISMO producto (material, tamaño, uso, forma, sinónimos que usaría un vendedor). Un anuncio de un producto relacionado pero distinto (ej. "almohadón de lactancia" cuando el nicho es "almohada para bebé") NO es una variante válida — es harina de otro costal, y el filtro de relevancia lo va a rechazar igual, así que ese término solo desperdicia el scrape.
+CONTEXTO CLAVE — Meta Ad Library busca "keyword_unordered": TODAS las palabras del término deben aparecer en el texto del anuncio (en cualquier orden). Términos largos o de jerga técnica casi nunca matchean nada real.
 
 Reglas:
-- Máximo 10 términos.
+- Devolvé la MISMA cantidad de términos que la lista base, uno por cada término base (mismo orden, mismo producto — solo cambia el idioma/localismo).
 - 1 a 3 palabras por término (preferí 1-2). NUNCA más de 3.
-- Test obligatorio antes de sugerir un término: "¿Un vendedor argentino de ecommerce escribiría literalmente estas palabras en el texto de un anuncio?" Si suena a jerga técnica/catálogo y no a texto de venta real, descartalo.
-- Cada término tiene que nombrar un PRODUCTO CONCRETO — puede ser una sola palabra si es específica (ej. "mancuernas", "yerbera"), pero NUNCA la categoría/rubro genérica sola (ej. "fitness", "accesorios", o el nicho repetido tal cual — si el nicho es "mates", ningún término puede ser literalmente "mates" o "mate").
-  Ejemplos BUENOS (nicho = categoría "fitness"): "mancuernas ajustables", "banda elástica", "guantes gym", "mat yoga".
-  Ejemplos BUENOS (nicho = producto específico "almohada para bebé"): "almohada bebe forma", "almohadita antivuelco", "almohada plagiocefalia" — todas siguen siendo la MISMA clase de producto.
-  Ejemplos MALOS (rechazar): "calleras de cuero calistenia" (jerga técnica de 4 palabras, nadie escribe así en un anuncio), "straps para peso muerto" (demasiado técnico/específico), "accesorios para gimnasio" (categoría, no producto), "mates" (nicho repetido), "almohadon de lactancia" cuando el nicho es "almohada para bebé" (producto distinto, no una variante).
-- Priorizá DIVERSIDAD real SOLO cuando el nicho es una categoría amplia (Paso 0) — cubrí distintos sub-productos con palabras simples. Si el nicho ya es un producto específico, priorizá en cambio cobertura de sinónimos/variantes de ESE producto.
-- PROHIBIDO incluir ganchos de oferta: "envío gratis", "cuotas sin interés", "2x1", "promo", "oferta", "gratis"
-- No inventes marcas irrelevantes
+- Usá el nombre de producto/jerga real que usaría un vendedor de ecommerce en ${input.targetCountry}, no una traducción académica.
+- PROHIBIDO incluir ganchos de oferta: "free shipping", "frete grátis", "2x1", "sale", "oferta", "gratis", etc.
+- No inventes marcas.
 
 Respondé SOLO JSON:
 {"terms":["..."]}`;

@@ -11,11 +11,10 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
 import { ToggleChip } from "@/components/ToggleChip";
+import { NichePicker } from "@/components/NichePicker";
 
 const CHANNELS = ["Mercado Libre", "Tienda propia", "Instagram", "WhatsApp"];
-const MAX_KEYWORDS = 3;
 
 export default function TiendaPage() {
   const router = useRouter();
@@ -44,7 +43,7 @@ export default function TiendaPage() {
     );
   }
 
-  if (!profile) {
+  if (!profile || !user) {
     return (
       <AppShell>
         <div className="flex flex-col items-center gap-4 py-16 text-center">
@@ -64,10 +63,11 @@ export default function TiendaPage() {
       <TiendaForm
         key={`${profile._id}-${profile.updatedAt}`}
         categories={allCategories}
+        maxNiches={user.plan === "pro" ? 3 : 1}
         initial={{
           businessName: profile.businessName,
           description: profile.description ?? "",
-          nicheKeywords: profile.nicheKeywords ?? [],
+          nicheIds: profile.nicheIds,
           channels: profile.channels ?? [],
           categoryIds: userCategories.map((c) => c._id),
         }}
@@ -83,13 +83,15 @@ type CategoryOption = {
 
 function TiendaForm({
   categories,
+  maxNiches,
   initial,
 }: {
   categories: CategoryOption[];
+  maxNiches: number;
   initial: {
     businessName: string;
     description: string;
-    nicheKeywords: string[];
+    nicheIds: Id<"radarNiches">[];
     channels: string[];
     categoryIds: Id<"categories">[];
   };
@@ -97,8 +99,7 @@ function TiendaForm({
   const updateProfile = useMutation(api.users.updateBusinessProfile);
   const [businessName, setBusinessName] = useState(initial.businessName);
   const [description, setDescription] = useState(initial.description);
-  const [nicheKeywords, setNicheKeywords] = useState(initial.nicheKeywords);
-  const [keywordDraft, setKeywordDraft] = useState("");
+  const [nicheIds, setNicheIds] = useState(initial.nicheIds);
   const [channels, setChannels] = useState(initial.channels);
   const [selectedCategoryIds, setSelectedCategoryIds] = useState(
     initial.categoryIds,
@@ -106,24 +107,6 @@ function TiendaForm({
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
-
-  function addKeyword() {
-    const value = keywordDraft.trim().replace(/\s+/g, " ");
-    if (!value || nicheKeywords.length >= MAX_KEYWORDS) return;
-    const exists = nicheKeywords.some(
-      (k) => k.toLowerCase() === value.toLowerCase(),
-    );
-    if (exists) {
-      setKeywordDraft("");
-      return;
-    }
-    setNicheKeywords((prev) => [...prev, value]);
-    setKeywordDraft("");
-  }
-
-  function removeKeyword(kw: string) {
-    setNicheKeywords((prev) => prev.filter((k) => k !== kw));
-  }
 
   function toggleChannel(ch: string) {
     setChannels((prev) =>
@@ -137,11 +120,7 @@ function TiendaForm({
     );
   }
 
-  const canSave =
-    businessName.trim() &&
-    (nicheKeywords.length > 0 ||
-      description.trim().length > 0 ||
-      selectedCategoryIds.length > 0);
+  const canSave = businessName.trim().length > 0 && nicheIds.length > 0;
 
   async function save() {
     setError(null);
@@ -151,10 +130,9 @@ function TiendaForm({
       await updateProfile({
         businessName,
         description: description.trim() || undefined,
-        nicheKeywords: nicheKeywords.length ? nicheKeywords : undefined,
+        nicheIds,
         channels: channels.length ? channels : undefined,
         categoryIds: selectedCategoryIds,
-        scheduleResearch: true,
       });
       setSaved(true);
     } catch (e) {
@@ -168,7 +146,7 @@ function TiendaForm({
     <div className="max-w-2xl">
       <h2>Mi tienda</h2>
       <p className="mt-1 text-muted-foreground">
-        Editá tu nicho. Usamos estas keywords para filtrar anuncios.
+        Editá tu nicho. Usamos esto para mostrarte los anuncios más relevantes.
       </p>
 
       <Card className="mt-8 gap-5 p-6">
@@ -181,6 +159,17 @@ function TiendaForm({
             onChange={(e) => setBusinessName(e.target.value)}
           />
         </label>
+
+        <div>
+          <span className="mb-1.5 block text-xs text-muted-foreground">
+            {maxNiches === 1 ? "Nicho" : `Nichos (hasta ${maxNiches})`}
+          </span>
+          <NichePicker
+            selected={nicheIds}
+            onChange={setNicheIds}
+            maxSelect={maxNiches}
+          />
+        </div>
 
         <div>
           <span className="mb-1.5 block text-xs text-muted-foreground">
@@ -201,43 +190,6 @@ function TiendaForm({
                   {cat.name}
                 </ToggleChip>
               ))}
-            </div>
-          )}
-        </div>
-
-        <div>
-          <span className="mb-1.5 block text-xs text-muted-foreground">
-            Keywords de nicho (hasta {MAX_KEYWORDS})
-          </span>
-          <div className="flex flex-wrap gap-2">
-            {nicheKeywords.map((kw) => (
-              <Badge
-                key={kw}
-                variant="outline"
-                render={
-                  <button type="button" onClick={() => removeKeyword(kw)} />
-                }
-              >
-                {kw} ✕
-              </Badge>
-            ))}
-          </div>
-          {nicheKeywords.length < MAX_KEYWORDS && (
-            <div className="mt-2 flex gap-2">
-              <Input
-                value={keywordDraft}
-                onChange={(e) => setKeywordDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    addKeyword();
-                  }
-                }}
-                placeholder="Ej. mates"
-              />
-              <Button type="button" variant="secondary" onClick={addKeyword}>
-                Agregar
-              </Button>
             </div>
           )}
         </div>
@@ -275,11 +227,7 @@ function TiendaForm({
         </div>
 
         {error && <p className="text-sm text-destructive">{error}</p>}
-        {saved && (
-          <p className="text-sm text-primary">
-            Guardado. Investigación encolada para tu nicho.
-          </p>
-        )}
+        {saved && <p className="text-sm text-primary">Guardado.</p>}
 
         <Button
           type="button"
@@ -287,7 +235,7 @@ function TiendaForm({
           onClick={() => void save()}
           className="w-full"
         >
-          {saving ? "Guardando…" : "Guardar y reinvestigar"}
+          {saving ? "Guardando…" : "Guardar"}
         </Button>
       </Card>
     </div>

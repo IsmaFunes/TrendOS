@@ -1,23 +1,19 @@
 /**
- * Cached niche-shared Gemini relevance pass for the ad feed, plus the
- * scrape-term enrichment bookkeeping (loadNicheForEnrich/applyScrapeTerms).
+ * Cached niche-shared Gemini relevance pass for the ad feed — the mandatory
+ * gate `listAdsForUser` requires before showing any ad from a fixed catalog
+ * niche (convex/radar/niches.ts).
  */
 
 import { v } from "convex/values";
-import {
-  internalMutation,
-  internalQuery,
-  query,
-} from "../_generated/server";
+import { internalMutation, internalQuery, query } from "../_generated/server";
 import { passesNicheAdGate } from "./adRelevance";
+import { flattenedGateTerms } from "./niches";
 import {
   MAX_ADS_TO_RANK,
   NICHE_AD_RELEVANCE_TTL_MS,
   nicheFingerprint,
 } from "./geminiAdsCore";
 import { clampScore } from "./metrics";
-
-const AR = "AR";
 
 function activeDays(startedAt: number | undefined, lastSeenAt: number): number {
   if (!startedAt) return 0;
@@ -47,7 +43,10 @@ export const getNicheRelevanceState = query({
       .withIndex("by_niche", (q) => q.eq("nicheId", args.nicheId))
       .unique();
     if (!relevance) return { status: "missing" as const, rankedCount: 0 };
-    const fp = nicheFingerprint(niche);
+    const fp = nicheFingerprint({
+      label: niche.label,
+      gateTerms: flattenedGateTerms(niche),
+    });
     if (relevance.fingerprint !== fp || relevance.expiresAt <= args.now) {
       return {
         status: "stale" as const,
@@ -70,7 +69,7 @@ export const loadNicheRelevanceContext = internalQuery({
     v.object({
       fingerprint: v.string(),
       label: v.string(),
-      keywords: v.array(v.string()),
+      gateTerms: v.array(v.string()),
       ads: v.array(
         v.object({
           id: v.string(),
@@ -88,8 +87,8 @@ export const loadNicheRelevanceContext = internalQuery({
   handler: async (ctx, args) => {
     const niche = await ctx.db.get(args.nicheId);
     if (!niche) return null;
-    const fingerprint = nicheFingerprint(niche);
-    const gateKeywords = [...niche.keywords, ...(niche.scrapeTerms ?? [])];
+    const gateTerms = flattenedGateTerms(niche);
+    const fingerprint = nicheFingerprint({ label: niche.label, gateTerms });
 
     const existing = await ctx.db
       .query("radarNicheAdRelevance")
@@ -109,7 +108,7 @@ export const loadNicheRelevanceContext = internalQuery({
     const ads = [];
     for (const link of links) {
       const ad = await ctx.db.get(link.adId);
-      if (!ad || ad.country !== AR) continue;
+      if (!ad) continue;
       const body = ad.body?.trim();
       if (!body) continue;
       if (
@@ -121,7 +120,7 @@ export const loadNicheRelevanceContext = internalQuery({
             destinationUrl: ad.destinationUrl,
             searchTerm: ad.searchTerm,
           },
-          gateKeywords,
+          gateTerms,
         )
       ) {
         continue;
@@ -140,7 +139,7 @@ export const loadNicheRelevanceContext = internalQuery({
     return {
       fingerprint,
       label: niche.label,
-      keywords: niche.keywords,
+      gateTerms,
       ads,
       existingFresh,
       existingCreatedAt: existing?.createdAt,
@@ -187,65 +186,5 @@ export const saveNicheRelevance = internalMutation({
       return existing._id;
     }
     return await ctx.db.insert("radarNicheAdRelevance", doc);
-  },
-});
-
-export const loadNicheForEnrich = internalQuery({
-  args: {
-    nicheId: v.id("radarNiches"),
-    jobId: v.optional(v.id("radarNicheScrapeJobs")),
-  },
-  returns: v.union(
-    v.null(),
-    v.object({
-      nicheId: v.id("radarNiches"),
-      keywords: v.array(v.string()),
-      scrapeTerms: v.optional(v.array(v.string())),
-      label: v.string(),
-      jobId: v.optional(v.id("radarNicheScrapeJobs")),
-      jobStatus: v.optional(v.string()),
-    }),
-  ),
-  handler: async (ctx, args) => {
-    const niche = await ctx.db.get(args.nicheId);
-    if (!niche) return null;
-    let jobStatus: string | undefined;
-    if (args.jobId) {
-      const job = await ctx.db.get(args.jobId);
-      jobStatus = job?.status;
-    }
-    return {
-      nicheId: niche._id,
-      keywords: niche.keywords,
-      scrapeTerms: niche.scrapeTerms,
-      label: niche.label,
-      jobId: args.jobId,
-      jobStatus,
-    };
-  },
-});
-
-export const applyScrapeTerms = internalMutation({
-  args: {
-    nicheId: v.id("radarNiches"),
-    jobId: v.optional(v.id("radarNicheScrapeJobs")),
-    terms: v.array(v.string()),
-  },
-  returns: v.null(),
-  handler: async (ctx, args) => {
-    const now = Date.now();
-    await ctx.db.patch(args.nicheId, {
-      scrapeTerms: args.terms,
-      updatedAt: now,
-    });
-    if (args.jobId) {
-      const job = await ctx.db.get(args.jobId);
-      // Only an "enriching" job is waiting on this — one already claimed,
-      // completed, or manually re-enqueued has moved past caring about it.
-      if (job && job.status === "enriching") {
-        await ctx.db.patch(args.jobId, { terms: args.terms, status: "pending" });
-      }
-    }
-    return null;
   },
 });

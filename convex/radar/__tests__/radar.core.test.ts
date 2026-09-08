@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  computeNicheKey,
-  nicheSimilarity,
-  NICHE_REUSE_SIMILARITY_MIN,
-} from "../../lib/nicheProfile";
-import {
   normalizeScrapeTerms,
   parseRankingResponse,
 } from "../geminiAdsCore";
@@ -725,32 +720,5 @@ describe("ad relevance gate", () => {
         mateKw,
       ),
     ).toBe(false);
-  });
-});
-
-describe("niche reuse (Jaccard)", () => {
-  it("same keywords share nicheKey", () => {
-    const a = { keywords: ["termo", "mate"] };
-    const b = { keywords: ["Mate", "Termo"] };
-    expect(computeNicheKey(a)).toBe(computeNicheKey(b));
-    expect(nicheSimilarity(a, b)).toBe(1);
-  });
-
-  it("near-duplicate keywords pass reuse threshold", () => {
-    const a = { keywords: ["termo"] };
-    const b = { keywords: ["termos", "mate"] };
-    // tokens may differ; assert similar-enough pairs reuse
-    const close = { keywords: ["termo", "mate"] };
-    const close2 = { keywords: ["termos", "mate"] };
-    expect(nicheSimilarity(close, close2)).toBeGreaterThanOrEqual(
-      NICHE_REUSE_SIMILARITY_MIN,
-    );
-    expect(nicheSimilarity(a, b)).toBeLessThan(1);
-  });
-
-  it("unrelated niches stay below reuse threshold", () => {
-    const a = { keywords: ["skincare", "serum"] };
-    const b = { keywords: ["termo", "mate"] };
-    expect(nicheSimilarity(a, b)).toBeLessThan(NICHE_REUSE_SIMILARITY_MIN);
   });
 });

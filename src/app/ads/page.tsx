@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
-import { useConvexAuth, useMutation, useQuery } from "convex/react";
+import { useConvexAuth, useQuery } from "convex/react";
 import { useRouter } from "next/navigation";
 import { Search } from "lucide-react";
 import { api } from "../../../convex/_generated/api";
@@ -34,42 +34,24 @@ export default function AdsPage() {
   const router = useRouter();
   const { isAuthenticated, isLoading } = useConvexAuth();
   const user = useQuery(api.users.me);
-  const ensureMyNiche = useMutation(api.radar.niches.ensureMyNiche);
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortMode>("quality");
-  const [nicheReady, setNicheReady] = useState(false);
 
-  useEffect(() => {
-    if (!isAuthenticated || !user?.onboardingComplete) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        await ensureMyNiche({});
-      } catch {
-        /* profile may lack keywords */
-      } finally {
-        if (!cancelled) setNicheReady(true);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [isAuthenticated, user?.onboardingComplete, ensureMyNiche]);
+  const canQueryFeed = Boolean(isAuthenticated && user?.onboardingComplete);
 
   const feedState = useQuery(
     api.radar.metaAds.getAdsFeedState,
-    isAuthenticated && user?.onboardingComplete && nicheReady ? {} : "skip",
+    canQueryFeed ? {} : "skip",
   );
 
-  // Relevance filtering now runs server-side, shared per niche, triggered
-  // automatically after each scrape — no per-user client-triggered Gemini
-  // call needed here anymore (see convex/radar/geminiAds.ts
-  // refreshNicheAdRelevance).
+  // Relevance filtering runs server-side, shared per niche, on the daily
+  // scrape cadence — no per-user client-triggered Gemini call needed here
+  // (see convex/radar/geminiAds.ts refreshNicheAdRelevance). A niche's
+  // profile.nicheIds is validated/required at onboarding, so there's no
+  // "ensure a niche exists" step to wait on before querying the feed.
   const ads = useQuery(
     api.radar.metaAds.listAdsForUser,
-    isAuthenticated && user?.onboardingComplete && nicheReady
-      ? { search: search || undefined, sort, limit: 48 }
-      : "skip",
+    canQueryFeed ? { search: search || undefined, sort, limit: 48 } : "skip",
   );
 
   const emptyMessage = useMemo(() => {
@@ -77,7 +59,7 @@ export default function AdsPage() {
     if (ads.length > 0) return null;
     switch (feedState.status) {
       case "no_niche":
-        return "Completá tus keywords de nicho para ver anuncios a medida.";
+        return "Elegí un nicho en Mi tienda para ver anuncios a medida.";
       case "pending_scrape":
       case "scraping":
         return feedState.nicheLabel
@@ -88,7 +70,7 @@ export default function AdsPage() {
           ? `Revisando la relevancia de los anuncios de “${feedState.nicheLabel}”…`
           : "Revisando la relevancia de los anuncios de tu nicho…";
       case "empty":
-        return "Todavía no encontramos anuncios para tu nicho. Probá otras keywords.";
+        return "Todavía no encontramos anuncios para tu nicho. Probá con otro nicho.";
       default:
         return "Todavía no hay anuncios para tu nicho.";
     }
@@ -169,7 +151,7 @@ export default function AdsPage() {
         </Select>
       </div>
 
-      {(ads === undefined || !nicheReady) && (
+      {ads === undefined && (
         <p className="text-muted-foreground">Buscando anuncios para vos…</p>
       )}
 

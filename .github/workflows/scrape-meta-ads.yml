@@ -15,15 +15,16 @@ name: Scrape Meta Ads Preview
 #                            https://proficient-salmon-481.convex.cloud)
 
 # Two triggers, belt-and-suspenders:
-#  - workflow_dispatch is called directly from Convex the moment ANY scrape
-#    job is created (convex/radar/niches.ts createScrapeJob -> see
-#    convex/radar/githubDispatch.ts) — a brand-new niche gets scraped within
-#    seconds of being created, not whenever the schedule next fires.
+#  - workflow_dispatch is called directly from Convex the moment the daily
+#    cron creates a fresh batch of jobs (convex/radar/niches.ts
+#    enqueueDailyScrapeJobs -> see convex/radar/githubDispatch.ts) — the
+#    day's batch starts draining within seconds instead of waiting for the
+#    schedule's next tick.
 #  - the 15-min schedule is the fallback: covers GITHUB_ACTIONS_TOKEN not
-#    being configured yet, a dispatch call failing, or anything the daily
-#    Convex refresh cron (refreshAllReadyNiches) queued without a live user
-#    waiting on it. Either way this workflow just claims whatever's pending
-#    and exits fast (no Meta traffic at all) when the queue is empty.
+#    being configured yet, a dispatch call failing, or just draining the
+#    rest of a large daily batch (~16 niches x 5 countries) across
+#    successive runs. Either way this workflow just claims whatever's
+#    pending and exits fast (no Meta traffic at all) when the queue is empty.
 # Free to run this often — this repo is public, so Actions minutes are
 # unlimited; only real cost is npm/Playwright setup time, cut via caching.
 on:
@@ -34,9 +35,16 @@ on:
       force_niche_id:
         description: >-
           Optional: a specific radarNiches document ID (from the Convex
-          dashboard) to force-scrape right now, even if it's already
-          "ready" — bypasses the normal queue instead of waiting for
-          this niche's turn. Leave empty for a normal queue-processing run.
+          dashboard) to force-scrape right now, even if it already has
+          ads — bypasses the normal queue instead of waiting for this
+          niche's turn. Leave empty for a normal queue-processing run.
+        type: string
+        default: ""
+      force_country:
+        description: >-
+          Optional, only used with force_niche_id: scrape just one of the
+          niche's countries (AR, US, BR, MX, ES). Leave empty to
+          force-enqueue every country the niche targets.
         type: string
         default: ""
       debug:
@@ -95,16 +103,21 @@ jobs:
           CONVEX_URL: ${{ secrets.CONVEX_URL }}
           META_ADS_DEBUG: ${{ inputs.debug && '1' || '' }}
           FORCE_NICHE_ID: ${{ inputs.force_niche_id }}
+          FORCE_COUNTRY: ${{ inputs.force_country }}
         # Kept modest on purpose: with runs every 15 min, a big backlog
-        # (e.g. right after the daily refresh cron queues every ready
-        # niche at once) drains gradually across successive runs instead
-        # of one run ballooning past the 15-min cadence and queueing up
-        # concurrency waits. --force-niche ignores --max-jobs anyway (it
-        # only ever claims that one niche's job, then the queue looks
-        # empty to it and it stops).
+        # (e.g. right after the daily enqueue cron queues every active
+        # niche x country at once) drains gradually across successive runs
+        # instead of one run ballooning past the 15-min cadence and
+        # queueing up concurrency waits. --force-niche ignores --max-jobs
+        # anyway (it only ever claims that one niche's job, then the queue
+        # looks empty to it and it stops).
         run: |
           if [ -n "$FORCE_NICHE_ID" ]; then
-            npm run scrape:meta-ads -- --force-niche "$FORCE_NICHE_ID" --max-jobs 5
+            if [ -n "$FORCE_COUNTRY" ]; then
+              npm run scrape:meta-ads -- --force-niche "$FORCE_NICHE_ID" --force-country "$FORCE_COUNTRY" --max-jobs 5
+            else
+              npm run scrape:meta-ads -- --force-niche "$FORCE_NICHE_ID" --max-jobs 5
+            fi
           else
             npm run scrape:meta-ads -- --max-jobs 5
           fi

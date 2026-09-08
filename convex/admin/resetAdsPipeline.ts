@@ -1,10 +1,10 @@
 /**
  * Dev-only clean slate for the Meta Ad Library pipeline — wipes every
- * ad/niche/match table and clears each businessProfile's nicheId, WITHOUT
- * touching users/categories/businessProfiles otherwise. Unlike admin/wipeAll,
- * this keeps accounts and onboarding answers intact: the next /ads visit
- * re-resolves a fresh niche bucket from the user's existing saved keywords
- * and queues a brand-new scrape, with no re-onboarding needed.
+ * scraped ad/match table and resets every niche back to "pending_scrape"
+ * with 0 ads, WITHOUT touching the niche catalog rows themselves or any
+ * user's chosen nicheIds (a niche is now a fixed, admin-seeded catalog
+ * entry, not per-user data — wiping its ad pool doesn't invalidate anyone's
+ * selection, it just means the next scrape cycle repopulates it).
  *
  *   npx convex run admin/resetAdsPipeline:resetAdsPipeline '{"confirm":"RESET_ADS"}'
  */
@@ -20,7 +20,6 @@ type AdsPipelineTable =
   | "radarAdInvestigations"
   | "radarNicheAds"
   | "radarNicheScrapeJobs"
-  | "radarNiches"
   | "radarAds"
   | "radarAdvertisers"
   | "radarStores";
@@ -31,7 +30,6 @@ const ADS_PIPELINE_TABLES: AdsPipelineTable[] = [
   "radarAdInvestigations",
   "radarNicheAds",
   "radarNicheScrapeJobs",
-  "radarNiches",
   "radarAds",
   "radarAdvertisers",
   "radarStores",
@@ -53,20 +51,20 @@ export const wipeAdsPipelineTableBatch = internalMutation({
   },
 });
 
-export const clearBusinessProfileNicheIdsBatch = internalMutation({
+export const resetNicheStatsBatch = internalMutation({
   args: {},
-  returns: v.object({ cleared: v.number(), remainingHint: v.boolean() }),
+  returns: v.object({ reset: v.number(), remainingHint: v.boolean() }),
   handler: async (ctx) => {
-    // businessProfiles is one row per user (no index needed for a full,
-    // bounded sweep) — unconditional patch is cheap and idempotent even
-    // for rows that already have no nicheId.
-    const page = await ctx.db.query("businessProfiles").take(BATCH);
-    for (const profile of page) {
-      if (profile.nicheId !== undefined) {
-        await ctx.db.patch(profile._id, { nicheId: undefined });
-      }
+    const page = await ctx.db.query("radarNiches").take(BATCH);
+    for (const niche of page) {
+      await ctx.db.patch(niche._id, {
+        adCount: 0,
+        lastScrapedAt: undefined,
+        status: "pending_scrape",
+        updatedAt: Date.now(),
+      });
     }
-    return { cleared: page.length, remainingHint: page.length === BATCH };
+    return { reset: page.length, remainingHint: page.length === BATCH };
   },
 });
 
@@ -74,7 +72,7 @@ export const resetAdsPipeline = internalAction({
   args: { confirm: v.string() },
   returns: v.object({
     tables: v.array(v.object({ table: v.string(), deleted: v.number() })),
-    profilesCleared: v.number(),
+    nichesReset: v.number(),
     totalDeleted: v.number(),
   }),
   handler: async (ctx, args) => {
@@ -99,17 +97,17 @@ export const resetAdsPipeline = internalAction({
       totalDeleted += deleted;
     }
 
-    let profilesCleared = 0;
+    let nichesReset = 0;
     for (;;) {
-      const batch: { cleared: number; remainingHint: boolean } =
+      const batch: { reset: number; remainingHint: boolean } =
         await ctx.runMutation(
-          internal.admin.resetAdsPipeline.clearBusinessProfileNicheIdsBatch,
+          internal.admin.resetAdsPipeline.resetNicheStatsBatch,
           {},
         );
-      profilesCleared += batch.cleared;
+      nichesReset += batch.reset;
       if (!batch.remainingHint) break;
     }
 
-    return { tables, profilesCleared, totalDeleted };
+    return { tables, nichesReset, totalDeleted };
   },
 });

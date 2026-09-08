@@ -11,11 +11,10 @@ import { Check, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { ToggleChip } from "@/components/ToggleChip";
+import { NichePicker } from "@/components/NichePicker";
 import { BrandLogo } from "@/components/BrandLogo";
 import { cn } from "@/lib/utils";
-import { MAX_NICHE_KEYWORDS } from "../../../convex/lib/nicheProfile";
 
 type BusinessGoal =
   | "start_ecommerce"
@@ -61,19 +60,7 @@ const CHANNELS = [
   "WhatsApp",
 ];
 
-// Kept in sync with the backend cap (convex/lib/nicheProfile.ts) — keywords
-// past this are silently dropped server-side, so the UI must not accept more.
-const MAX_KEYWORDS = MAX_NICHE_KEYWORDS;
-const MAX_EXCLUSIONS = 10;
-
-const STEP_LABELS = [
-  "Argentina",
-  "Objetivo",
-  "Canales",
-  "Categorías",
-  "Nicho",
-  "Logística",
-];
+const STEP_LABELS = ["Argentina", "Objetivo", "Canales", "Nicho", "Logística"];
 
 function Stepper({ step, total }: { step: number; total: number }) {
   const labels = STEP_LABELS.slice(0, total);
@@ -153,7 +140,6 @@ export default function OnboardingPage() {
   const router = useRouter();
   const { isAuthenticated, isLoading: authLoading } = useConvexAuth();
   const user = useQuery(api.users.me);
-  const categories = useQuery(api.categories.list);
   const ensureUser = useMutation(api.users.ensureUser);
   const completeOnboarding = useMutation(api.users.completeOnboarding);
 
@@ -161,14 +147,7 @@ export default function OnboardingPage() {
   const [goal, setGoal] = useState<BusinessGoal | null>(null);
   const [channels, setChannels] = useState<string[]>([]);
   const [storeUrl, setStoreUrl] = useState("");
-  const [selectedCategoryIds, setSelectedCategoryIds] = useState<
-    Id<"categories">[]
-  >([]);
-  const [nicheKeywords, setNicheKeywords] = useState<string[]>([]);
-  const [keywordDraft, setKeywordDraft] = useState("");
-  const [excludedKeywords, setExcludedKeywords] = useState<string[]>([]);
-  const [excludeDraft, setExcludeDraft] = useState("");
-  const [showExclusions, setShowExclusions] = useState(false);
+  const [nicheIds, setNicheIds] = useState<Id<"radarNiches">[]>([]);
   const [hasWarehouseStorage, setHasWarehouseStorage] = useState<
     boolean | null
   >(null);
@@ -202,36 +181,6 @@ export default function OnboardingPage() {
     );
   }
 
-  function toggleCategory(id: Id<"categories">) {
-    setSelectedCategoryIds((prev) =>
-      prev.includes(id) ? prev.filter((c) => c !== id) : [...prev, id],
-    );
-  }
-
-  function addKeyword() {
-    const value = keywordDraft.trim().replace(/\s+/g, " ");
-    if (!value || nicheKeywords.length >= MAX_KEYWORDS) return;
-    if (nicheKeywords.some((k) => k.toLowerCase() === value.toLowerCase())) {
-      setKeywordDraft("");
-      return;
-    }
-    setNicheKeywords((prev) => [...prev, value]);
-    setKeywordDraft("");
-  }
-
-  function addExclusion() {
-    const value = excludeDraft.trim().replace(/\s+/g, " ");
-    if (!value || excludedKeywords.length >= MAX_EXCLUSIONS) return;
-    if (
-      excludedKeywords.some((k) => k.toLowerCase() === value.toLowerCase())
-    ) {
-      setExcludeDraft("");
-      return;
-    }
-    setExcludedKeywords((prev) => [...prev, value]);
-    setExcludeDraft("");
-  }
-
   const needsLogistics =
     goal !== null && goal !== "browse_ads" && goal !== "create_store";
   const needsStoreUrl =
@@ -239,7 +188,8 @@ export default function OnboardingPage() {
     channels.includes("Tienda Nube") ||
     channels.includes("Shopify") ||
     channels.includes("Tienda propia");
-  const totalSteps = needsLogistics ? 6 : 5;
+  const totalSteps = needsLogistics ? 5 : 4;
+  const maxNiches = user?.plan === "pro" ? 3 : 1;
 
   async function finish() {
     if (!goal) return;
@@ -250,11 +200,7 @@ export default function OnboardingPage() {
         goal,
         channels: channels.length ? channels : undefined,
         existingStoreUrl: storeUrl.trim() || undefined,
-        categoryIds: selectedCategoryIds.length ? selectedCategoryIds : undefined,
-        nicheKeywords,
-        excludedKeywords: excludedKeywords.length
-          ? excludedKeywords
-          : undefined,
+        nicheIds,
         hasWarehouseStorage:
           needsLogistics && hasWarehouseStorage !== null
             ? hasWarehouseStorage
@@ -296,8 +242,7 @@ export default function OnboardingPage() {
 
       <h1 className="text-[30px]">Contanos sobre tu negocio</h1>
       <p className="max-w-[56ch] text-muted-foreground">
-        Esto nos ayuda a armar tu nicho y encontrar los productos con más
-        potencial para vos.
+        Esto nos ayuda a mostrarte los anuncios con más potencial para vos.
       </p>
 
       <Stepper step={step} total={totalSteps} />
@@ -364,148 +309,24 @@ export default function OnboardingPage() {
 
         {step === 4 && (
           <section className="flex flex-1 flex-col">
-            <h3>¿Qué categorías vendés?</h3>
+            <h3>Elegí tu nicho</h3>
             <p className="mt-1 text-sm text-muted-foreground">
-              Elegí todas las que apliquen — podés ajustar esto después.
+              {maxNiches === 1
+                ? "Ya tenemos anuncios cargados para estos nichos — vas a ver resultados apenas termines."
+                : `Elegí hasta ${maxNiches} nichos — ya tenemos anuncios cargados para todos.`}
             </p>
-            <div className="mt-6 flex flex-wrap gap-2">
-              {categories === undefined && (
-                <p className="text-sm text-muted-foreground">
-                  Cargando categorías…
-                </p>
-              )}
-              {categories?.length === 0 && (
-                <p className="text-sm text-muted-foreground">
-                  Todavía no hay categorías cargadas — podés saltar este paso
-                  y usar keywords en el siguiente.
-                </p>
-              )}
-              {categories?.map((cat) => (
-                <ToggleChip
-                  key={cat._id}
-                  selected={selectedCategoryIds.includes(cat._id)}
-                  onClick={() => toggleCategory(cat._id)}
-                >
-                  {cat.name}
-                </ToggleChip>
-              ))}
-            </div>
-          </section>
-        )}
-
-        {step === 5 && (
-          <section className="flex flex-1 flex-col">
-            <h3>Nicho específico</h3>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Escribí al menos una keyword del producto específico que vendés
-              (ej. cocina, mascotas, fitness) — las categorías solo ayudan a
-              afinar, no reemplazan esto.
-            </p>
-            <div className="mt-6 flex max-w-[420px] gap-2">
-              <Input
-                value={keywordDraft}
-                onChange={(e) => setKeywordDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    addKeyword();
-                  }
-                }}
-                placeholder="Agregar keyword"
-                disabled={nicheKeywords.length >= MAX_KEYWORDS}
+            <div className="mt-6">
+              <NichePicker
+                selected={nicheIds}
+                onChange={setNicheIds}
+                maxSelect={maxNiches}
               />
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={addKeyword}
-                disabled={nicheKeywords.length >= MAX_KEYWORDS}
-              >
-                Agregar
-              </Button>
             </div>
-            <p className="mt-2 text-xs text-muted-foreground">
-              {nicheKeywords.length >= MAX_KEYWORDS
-                ? `Máximo ${MAX_KEYWORDS} keywords.`
-                : `Hasta ${MAX_KEYWORDS} keywords.`}
-            </p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {nicheKeywords.map((kw) => (
-                <Badge
-                  key={kw}
-                  variant="outline"
-                  render={
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setNicheKeywords((prev) =>
-                          prev.filter((k) => k !== kw),
-                        )
-                      }
-                    />
-                  }
-                >
-                  {kw} ✕
-                </Badge>
-              ))}
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setShowExclusions((v) => !v)}
-              className="mt-6 text-left text-sm text-muted-foreground underline underline-offset-2 hover:text-foreground"
-            >
-              {showExclusions ? "Ocultar" : "No quiero vender…"}
-            </button>
-            {showExclusions && (
-              <div className="mt-2 max-w-[420px]">
-                <div className="flex gap-2">
-                  <Input
-                    value={excludeDraft}
-                    onChange={(e) => setExcludeDraft(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        addExclusion();
-                      }
-                    }}
-                    placeholder="ej. suplementos"
-                  />
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    onClick={addExclusion}
-                  >
-                    Agregar
-                  </Button>
-                </div>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {excludedKeywords.map((kw) => (
-                    <Badge
-                      key={kw}
-                      variant="secondary"
-                      render={
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setExcludedKeywords((prev) =>
-                              prev.filter((k) => k !== kw),
-                            )
-                          }
-                        />
-                      }
-                    >
-                      {kw} ✕
-                    </Badge>
-                  ))}
-                </div>
-              </div>
-            )}
-
             {error && <p className="mt-4 text-sm text-destructive">{error}</p>}
           </section>
         )}
 
-        {step === 6 && needsLogistics && (
+        {step === 5 && needsLogistics && (
           <section className="flex flex-1 flex-col">
             <h3>¿Tenés lugar para guardar stock?</h3>
             <p className="mt-1 text-sm text-muted-foreground">
@@ -545,8 +366,8 @@ export default function OnboardingPage() {
               type="button"
               className="flex-1"
               onClick={() => {
-                if (step === 5 && nicheKeywords.length === 0) {
-                  setError("Agregá al menos una keyword");
+                if (step === 4 && nicheIds.length === 0) {
+                  setError("Elegí al menos un nicho");
                   return;
                 }
                 setError(null);
@@ -563,8 +384,8 @@ export default function OnboardingPage() {
               className="flex-1"
               disabled={saving}
               onClick={() => {
-                if (nicheKeywords.length === 0) {
-                  setError("Agregá al menos una keyword");
+                if (nicheIds.length === 0) {
+                  setError("Elegí al menos un nicho");
                   return;
                 }
                 void finish();

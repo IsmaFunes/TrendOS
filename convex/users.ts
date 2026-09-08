@@ -8,27 +8,41 @@ import {
   clampShortNotes,
   MAX_LOGISTICS_CONSTRAINTS_LENGTH,
   MAX_STORAGE_NOTES_LENGTH,
-  normalizeExcludedKeywords,
-  normalizeNicheKeywords,
 } from "./lib/nicheProfile";
 import { businessGoalValidator } from "./radar/validators";
-import { resolveOrCreateNicheCore } from "./radar/niches";
 
-/**
- * Category names fold into a SEPARATE description used only for niche
- * resolution (scrape-term generation) — never into the description field
- * the user actually typed and sees again on reload.
- */
-function foldCategoryNamesIntoDescription(
-  categoryNames: string[],
-  typedDescription: string | undefined,
-): string | undefined {
-  if (categoryNames.length === 0) return typedDescription;
-  return clampNicheDescription(
-    [`Categorías: ${categoryNames.join(", ")}`, typedDescription]
-      .filter((s): s is string => Boolean(s))
-      .join(". "),
-  );
+/** Free plan picks one niche; pro can follow up to 3. */
+function maxNichesForPlan(plan: "free" | "pro"): number {
+  return plan === "pro" ? 3 : 1;
+}
+
+async function validateNicheIds(
+  ctx: MutationCtx,
+  nicheIds: Id<"radarNiches">[],
+  plan: "free" | "pro",
+): Promise<Id<"radarNiches">[]> {
+  if (nicheIds.length === 0) {
+    throw new Error("Elegí al menos un nicho");
+  }
+  const max = maxNichesForPlan(plan);
+  if (nicheIds.length > max) {
+    throw new Error(
+      plan === "pro"
+        ? `El plan Pro permite hasta ${max} nichos`
+        : "El plan Free permite elegir un solo nicho",
+    );
+  }
+  const unique = new Set(nicheIds.map((id) => String(id)));
+  if (unique.size !== nicheIds.length) {
+    throw new Error("Nicho repetido");
+  }
+  for (const nicheId of nicheIds) {
+    const niche = await ctx.db.get(nicheId);
+    if (!niche || !niche.isActive) {
+      throw new Error("Nicho inválido");
+    }
+  }
+  return nicheIds;
 }
 
 async function upsertUserFromIdentity(ctx: MutationCtx): Promise<Id<"users">> {
@@ -63,8 +77,6 @@ const businessProfileReturn = v.object({
   userId: v.id("users"),
   businessName: v.string(),
   description: v.optional(v.string()),
-  nicheKeywords: v.optional(v.array(v.string())),
-  excludedKeywords: v.optional(v.array(v.string())),
   channels: v.optional(v.array(v.string())),
   goal: v.optional(businessGoalValidator),
   existingStoreUrl: v.optional(v.string()),
@@ -74,7 +86,7 @@ const businessProfileReturn = v.object({
   hasWarehouseStorage: v.optional(v.boolean()),
   storageNotes: v.optional(v.string()),
   logisticsConstraints: v.optional(v.string()),
-  nicheId: v.optional(v.id("radarNiches")),
+  nicheIds: v.array(v.id("radarNiches")),
   updatedAt: v.number(),
 });
 
@@ -114,10 +126,8 @@ export const completeOnboarding = mutation({
     goal: businessGoalValidator,
     channels: v.optional(v.array(v.string())),
     existingStoreUrl: v.optional(v.string()),
-    nicheKeywords: v.optional(v.array(v.string())),
-    excludedKeywords: v.optional(v.array(v.string())),
     description: v.optional(v.string()),
-    categoryIds: v.optional(v.array(v.id("categories"))),
+    nicheIds: v.array(v.id("radarNiches")),
     businessName: v.optional(v.string()),
     hasWarehouseStorage: v.optional(v.boolean()),
     storageNotes: v.optional(v.string()),
@@ -131,35 +141,8 @@ export const completeOnboarding = mutation({
       throw new Error("User not found after signup");
     }
 
-    const categoryIds = args.categoryIds ?? [];
-    const categoryDocs =
-      categoryIds.length > 0
-        ? await Promise.all(categoryIds.map((id) => ctx.db.get(id)))
-        : [];
-    const categoryNames = categoryDocs
-      .filter((c): c is NonNullable<typeof c> => c !== null)
-      .map((c) => c.name);
-
-    const nicheKeywords = normalizeNicheKeywords(args.nicheKeywords);
-    // Persisted as-is — the user's own text, never mixed with category names.
+    const nicheIds = await validateNicheIds(ctx, args.nicheIds, user.plan);
     const description = clampNicheDescription(args.description);
-    // Fold selected categories into a SEPARATE description used only for
-    // niche resolution, so they reach scrape-term generation as light
-    // context — without polluting the description field the user
-    // sees/edits. Categories no longer stand in for a real keyword: a
-    // category is always a coarse bucket, never specific enough to gate
-    // ads on by itself, so at least one typed keyword is required.
-    const nicheDescription = foldCategoryNamesIntoDescription(
-      categoryNames,
-      description,
-    );
-    if (nicheKeywords.length === 0) {
-      throw new Error(
-        "Contanos qué producto específico te interesa (agregá al menos una keyword)",
-      );
-    }
-
-    const excludedKeywords = normalizeExcludedKeywords(args.excludedKeywords);
     const storageNotes = clampShortNotes(
       args.storageNotes,
       MAX_STORAGE_NOTES_LENGTH,
@@ -180,43 +163,15 @@ export const completeOnboarding = mutation({
       onboardingComplete: true,
     });
 
-    const existingLinks = await ctx.db
-      .query("userCategories")
-      .withIndex("by_user", (q) => q.eq("userId", user._id))
-      .collect();
-    for (const link of existingLinks) {
-      await ctx.db.delete(link._id);
-    }
-    for (const categoryId of categoryIds) {
-      await ctx.db.insert("userCategories", {
-        userId: user._id,
-        categoryId,
-      });
-    }
-
     const existingProfile = await ctx.db
       .query("businessProfiles")
       .withIndex("by_user", (q) => q.eq("userId", user._id))
       .unique();
 
-    // nicheKeywords.length > 0 is guaranteed by the check above — categories
-    // (folded only into nicheDescription, as light context) never stand in
-    // for a real keyword here.
-    const resolved = await resolveOrCreateNicheCore(ctx, {
-      keywords: nicheKeywords,
-      description: nicheDescription,
-      country: "AR",
-    });
-    const nicheId = resolved.nicheId;
-
     const profileData = {
       userId: user._id,
       businessName,
       description,
-      nicheKeywords: nicheKeywords.length ? nicheKeywords : undefined,
-      excludedKeywords: excludedKeywords.length
-        ? excludedKeywords
-        : undefined,
       channels: args.channels,
       goal: args.goal,
       existingStoreUrl: storeUrl || undefined,
@@ -224,7 +179,7 @@ export const completeOnboarding = mutation({
       storageNotes:
         args.hasWarehouseStorage === true ? storageNotes : undefined,
       logisticsConstraints,
-      nicheId,
+      nicheIds,
       updatedAt: Date.now(),
     };
 
@@ -242,14 +197,12 @@ export const updateBusinessProfile = mutation({
   args: {
     businessName: v.string(),
     description: v.optional(v.string()),
-    nicheKeywords: v.optional(v.array(v.string())),
-    excludedKeywords: v.optional(v.array(v.string())),
     channels: v.optional(v.array(v.string())),
     monthlyRevenueRange: v.optional(v.string()),
     targetMarginPercent: v.optional(v.number()),
+    nicheIds: v.optional(v.array(v.id("radarNiches"))),
     categoryIds: v.optional(v.array(v.id("categories"))),
     siteId: v.optional(v.string()),
-    scheduleResearch: v.optional(v.boolean()),
     hasWarehouseStorage: v.optional(v.boolean()),
     storageNotes: v.optional(v.string()),
     logisticsConstraints: v.optional(v.string()),
@@ -266,43 +219,7 @@ export const updateBusinessProfile = mutation({
       throw new Error("Business name is required");
     }
 
-    // categoryIds omitted = leave existing category links untouched, but
-    // still fold their names into the niche description below — otherwise a
-    // save that doesn't touch the category picker (e.g. just renaming the
-    // business) would silently drop niche signal that came only from
-    // categories set during onboarding.
-    let categoryNames: string[];
-    if (args.categoryIds) {
-      const categoryDocs = await Promise.all(
-        args.categoryIds.map((id) => ctx.db.get(id)),
-      );
-      categoryNames = categoryDocs
-        .filter((c): c is NonNullable<typeof c> => c !== null)
-        .map((c) => c.name);
-    } else {
-      const existingLinks = await ctx.db
-        .query("userCategories")
-        .withIndex("by_user", (q) => q.eq("userId", user._id))
-        .collect();
-      const existingCategoryDocs = await Promise.all(
-        existingLinks.map((l) => ctx.db.get(l.categoryId)),
-      );
-      categoryNames = existingCategoryDocs
-        .filter((c): c is NonNullable<typeof c> => c !== null)
-        .map((c) => c.name);
-    }
-
-    const nicheKeywords = normalizeNicheKeywords(args.nicheKeywords);
     const description = clampNicheDescription(args.description);
-    const nicheDescription = foldCategoryNamesIntoDescription(
-      categoryNames,
-      description,
-    );
-    if (nicheKeywords.length === 0) {
-      throw new Error("Agregá al menos 1 keyword de lo que revendés");
-    }
-
-    const excludedKeywords = normalizeExcludedKeywords(args.excludedKeywords);
     const storageNotes = clampShortNotes(
       args.storageNotes,
       MAX_STORAGE_NOTES_LENGTH,
@@ -316,6 +233,9 @@ export const updateBusinessProfile = mutation({
       await ctx.db.patch(user._id, { siteId: args.siteId });
     }
 
+    // categoryIds is a separate self-tagging feature (used standalone on
+    // /tienda) unrelated to niche selection — omitted means leave existing
+    // links untouched.
     if (args.categoryIds) {
       const existingLinks = await ctx.db
         .query("userCategories")
@@ -337,27 +257,18 @@ export const updateBusinessProfile = mutation({
       .withIndex("by_user", (q) => q.eq("userId", user._id))
       .unique();
 
-    let nicheId = existingProfile?.nicheId;
-    {
-      // nicheKeywords.length > 0 is guaranteed by the check above —
-      // categories (folded only into nicheDescription) never stand in for
-      // a real keyword here.
-      const resolved = await resolveOrCreateNicheCore(ctx, {
-        keywords: nicheKeywords,
-        description: nicheDescription,
-        country: "AR",
-      });
-      nicheId = resolved.nicheId;
+    // nicheIds omitted means leave the existing niche selection untouched.
+    const nicheIds = args.nicheIds
+      ? await validateNicheIds(ctx, args.nicheIds, user.plan)
+      : (existingProfile?.nicheIds ?? []);
+    if (nicheIds.length === 0) {
+      throw new Error("Elegí al menos un nicho");
     }
 
     const profileData = {
       userId: user._id,
       businessName: args.businessName.trim(),
       description,
-      nicheKeywords: nicheKeywords.length ? nicheKeywords : undefined,
-      excludedKeywords: excludedKeywords.length
-        ? excludedKeywords
-        : undefined,
       channels: args.channels,
       monthlyRevenueRange: args.monthlyRevenueRange,
       targetMarginPercent: args.targetMarginPercent,
@@ -365,7 +276,7 @@ export const updateBusinessProfile = mutation({
       storageNotes:
         args.hasWarehouseStorage === true ? storageNotes : undefined,
       logisticsConstraints,
-      nicheId,
+      nicheIds,
       updatedAt: Date.now(),
     };
 
@@ -374,8 +285,6 @@ export const updateBusinessProfile = mutation({
     } else {
       await ctx.db.insert("businessProfiles", profileData);
     }
-
-    void args.scheduleResearch;
 
     return null;
   },

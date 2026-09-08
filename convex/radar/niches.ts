@@ -1,5 +1,10 @@
 /**
- * Niche buckets for Meta ad reuse across similar stores (AR).
+ * Fixed niche catalog — a curated, admin-seeded set of niches users pick
+ * from at onboarding (convex/admin/seedNicheCatalog.ts). Ads are scraped
+ * continuously in the background (daily cron, across every country in a
+ * niche's scrapeTermsByCountry) so a niche already has ads before any user
+ * ever selects it — there is no per-user resolution or on-demand scrape
+ * trigger anymore.
  */
 
 import { v } from "convex/values";
@@ -8,25 +13,14 @@ import {
   internalQuery,
   mutation,
   query,
-  type MutationCtx,
 } from "../_generated/server";
 import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
-import { getCurrentUserOrNull } from "../lib/auth";
-import {
-  computeNicheKey,
-  NICHE_REUSE_SIMILARITY_MIN,
-  normalizeNicheKeywords,
-  nicheSimilarity,
-  type NicheInput,
-} from "../lib/nicheProfile";
 
-const AR = "AR";
 /**
- * Below this, enqueue / keep scrape pending — a niche is not "ready" either.
- * Raised from 5: the feed shows a fixed top FEED_SIZE=10 (metaAds.ts), and
- * this counts gate-passed ads BEFORE the Gemini relevance pass drops some
- * fraction of them — 10 raw gives a realistic shot at 10 kept, 5 rarely did.
+ * Below this, a niche's status stays "pending_scrape" — this counts
+ * gate-passed ads BEFORE the Gemini relevance pass drops some fraction of
+ * them, so it needs headroom above the number we actually want to show.
  */
 export const MIN_ADS_READY = 10;
 
@@ -36,218 +30,43 @@ const nicheStatusValidator = v.union(
   v.literal("scraping"),
 );
 
+const scrapeTermsByCountryValidator = v.array(
+  v.object({ country: v.string(), terms: v.array(v.string()) }),
+);
+
 const nicheReturnValidator = v.object({
   _id: v.id("radarNiches"),
   _creationTime: v.number(),
-  country: v.string(),
-  nicheKey: v.string(),
-  keywords: v.array(v.string()),
-  scrapeTerms: v.optional(v.array(v.string())),
+  slug: v.string(),
   label: v.string(),
+  description: v.optional(v.string()),
+  scrapeTermsByCountry: scrapeTermsByCountryValidator,
   adCount: v.number(),
   lastScrapedAt: v.optional(v.number()),
   status: nicheStatusValidator,
+  isActive: v.boolean(),
   createdAt: v.number(),
   updatedAt: v.number(),
 });
 
-function scrapeTermsForKeywords(keywords: string[]): string[] {
-  const terms = [
-    ...keywords.map((k) => k.trim().toLowerCase()).filter(Boolean),
-  ];
-  return [...new Set(terms)].slice(0, 6);
+/** All curated terms across every country, deduped — used by the ad gate. */
+export function flattenedGateTerms(niche: Doc<"radarNiches">): string[] {
+  const set = new Set<string>();
+  for (const entry of niche.scrapeTermsByCountry) {
+    for (const t of entry.terms) set.add(t);
+  }
+  return [...set];
 }
 
-function jobTermsFromNiche(niche: Doc<"radarNiches">): string[] {
-  if (niche.scrapeTerms && niche.scrapeTerms.length > 0) {
-    return [
-      ...new Set(
-        niche.scrapeTerms.map((t) => t.trim().toLowerCase()).filter(Boolean),
-      ),
-    ].slice(0, 8);
-  }
-  return scrapeTermsForKeywords(niche.keywords);
-}
-
-async function createScrapeJob(
-  ctx: MutationCtx,
-  nicheId: Id<"radarNiches">,
-  terms: string[],
-  description?: string,
-): Promise<Id<"radarNicheScrapeJobs">> {
-  const jobId = await ctx.db.insert("radarNicheScrapeJobs", {
-    nicheId,
-    terms,
-    // Not claimable yet — enrichNicheScrapeTerms flips this to "pending"
-    // (success or failure) once it's done expanding `terms` past the raw
-    // keyword phrase.
-    status: "enriching",
-    createdAt: Date.now(),
-  });
-  await ctx.scheduler.runAfter(
-    0,
-    internal.radar.geminiAds.enrichNicheScrapeTerms,
-    {
-      nicheId,
-      jobId,
-      description,
-    },
-  );
-  // Best-effort: ping GitHub Actions to run the scrape worker now instead
-  // of waiting for its 15-min poll — see githubDispatch.ts. No-ops silently
-  // if GITHUB_ACTIONS_TOKEN isn't configured; the poll still covers it.
-  await ctx.scheduler.runAfter(
-    0,
-    internal.radar.githubDispatch.dispatchScrapeWorkflow,
-    {},
-  );
-  return jobId;
-}
-
-async function findExactNiche(
-  ctx: MutationCtx,
-  country: string,
-  nicheKey: string,
-): Promise<Id<"radarNiches"> | null> {
-  if (!nicheKey) return null;
-  const existing = await ctx.db
-    .query("radarNiches")
-    .withIndex("by_key", (q) => q.eq("country", country).eq("nicheKey", nicheKey))
-    .unique();
-  return existing?._id ?? null;
-}
-
-async function findSimilarNiche(
-  ctx: MutationCtx,
-  country: string,
-  input: NicheInput,
-): Promise<Id<"radarNiches"> | null> {
-  const candidates = await ctx.db
-    .query("radarNiches")
-    .withIndex("by_country_updated", (q) => q.eq("country", country))
-    .order("desc")
-    .take(80);
-
-  let bestId: Id<"radarNiches"> | null = null;
-  let bestScore = 0;
-  for (const niche of candidates) {
-    const score = nicheSimilarity(input, { keywords: niche.keywords });
-    if (score >= NICHE_REUSE_SIMILARITY_MIN && score > bestScore) {
-      bestScore = score;
-      bestId = niche._id;
-    }
-  }
-  return bestId;
-}
-
-export async function enqueueScrapeIfNeeded(
-  ctx: MutationCtx,
-  nicheId: Id<"radarNiches">,
-  description?: string,
-): Promise<boolean> {
-  const niche = await ctx.db.get(nicheId);
-  if (!niche) return false;
-
-  if (niche.status === "ready" && niche.adCount >= MIN_ADS_READY) return false;
-  if (niche.status === "scraping") return false;
-
-  // A job already in flight for this niche — enriching, waiting to be
-  // claimed, or claimed — means don't queue a duplicate.
-  for (const status of ["enriching", "pending", "claimed"] as const) {
-    const existing = await ctx.db
-      .query("radarNicheScrapeJobs")
-      .withIndex("by_niche_status", (q) =>
-        q.eq("nicheId", nicheId).eq("status", status),
-      )
-      .first();
-    if (existing) return false;
-  }
-
-  await createScrapeJob(ctx, nicheId, jobTermsFromNiche(niche), description);
-
-  if (niche.status !== "pending_scrape") {
-    await ctx.db.patch(nicheId, {
-      status: "pending_scrape",
-      updatedAt: Date.now(),
-    });
-  }
-  return true;
-}
-
-/**
- * Resolve an existing niche (exact key or Jaccard) or create one + scrape job.
- */
-export async function resolveOrCreateNicheCore(
-  ctx: MutationCtx,
-  args: {
-    keywords?: string[];
-    description?: string;
-    country?: string;
-  },
-): Promise<{
-  nicheId: Id<"radarNiches">;
-  created: boolean;
-  reusedSimilar: boolean;
-}> {
-  const country = (args.country ?? AR).toUpperCase();
-  const keywords = normalizeNicheKeywords(args.keywords);
-  const input: NicheInput = {
-    keywords,
-    description: args.description,
-  };
-  const nicheKey = computeNicheKey(input);
-  if (!nicheKey && keywords.length === 0) {
-    throw new Error("Need niche keywords to resolve a niche bucket");
-  }
-
-  const exactId = await findExactNiche(ctx, country, nicheKey);
-  if (exactId) {
-    await enqueueScrapeIfNeeded(ctx, exactId, args.description);
-    return { nicheId: exactId, created: false, reusedSimilar: false };
-  }
-
-  const similarId = await findSimilarNiche(ctx, country, input);
-  if (similarId) {
-    await enqueueScrapeIfNeeded(ctx, similarId, args.description);
-    return { nicheId: similarId, created: false, reusedSimilar: true };
-  }
-
-  const now = Date.now();
-  const label = keywords.join(", ") || "nicho";
-  const nicheId = await ctx.db.insert("radarNiches", {
-    country,
-    nicheKey,
-    keywords,
-    label,
-    adCount: 0,
-    status: "pending_scrape",
-    createdAt: now,
-    updatedAt: now,
-  });
-
-  await createScrapeJob(
-    ctx,
-    nicheId,
-    scrapeTermsForKeywords(keywords),
-    args.description,
-  );
-
-  return { nicheId, created: true, reusedSimilar: false };
-}
-
-export const resolveOrCreateNiche = internalMutation({
-  args: {
-    keywords: v.optional(v.array(v.string())),
-    description: v.optional(v.string()),
-    country: v.optional(v.string()),
-  },
-  returns: v.object({
-    nicheId: v.id("radarNiches"),
-    created: v.boolean(),
-    reusedSimilar: v.boolean(),
-  }),
-  handler: async (ctx, args) => {
-    return await resolveOrCreateNicheCore(ctx, args);
+/** Public: niches the onboarding/tienda picker can offer. */
+export const listActive = query({
+  args: {},
+  returns: v.array(nicheReturnValidator),
+  handler: async (ctx) => {
+    return await ctx.db
+      .query("radarNiches")
+      .withIndex("by_active", (q) => q.eq("isActive", true))
+      .collect();
   },
 });
 
@@ -255,39 +74,7 @@ export const getNiche = query({
   args: { nicheId: v.id("radarNiches") },
   returns: v.union(nicheReturnValidator, v.null()),
   handler: async (ctx, args) => {
-    const niche = await ctx.db.get(args.nicheId);
-    if (!niche) return null;
-    return niche;
-  },
-});
-
-/** Lazy-assign niche for users who onboarded before niche buckets existed. */
-export const ensureMyNiche = mutation({
-  args: {},
-  returns: v.union(v.id("radarNiches"), v.null()),
-  handler: async (ctx) => {
-    const user = await getCurrentUserOrNull(ctx);
-    if (!user) throw new Error("Not authenticated");
-    const profile = await ctx.db
-      .query("businessProfiles")
-      .withIndex("by_user", (q) => q.eq("userId", user._id))
-      .unique();
-    if (!profile) return null;
-    if (profile.nicheId) {
-      await enqueueScrapeIfNeeded(ctx, profile.nicheId);
-      return profile.nicheId;
-    }
-    if (!(profile.nicheKeywords?.length || profile.description)) return null;
-    const resolved = await resolveOrCreateNicheCore(ctx, {
-      keywords: profile.nicheKeywords,
-      description: profile.description,
-      country: "AR",
-    });
-    await ctx.db.patch(profile._id, {
-      nicheId: resolved.nicheId,
-      updatedAt: Date.now(),
-    });
-    return resolved.nicheId;
+    return await ctx.db.get(args.nicheId);
   },
 });
 
@@ -300,13 +87,77 @@ export const getNicheInternal = internalQuery({
 });
 
 /**
- * Worker: force-queue scrape job(s) even if niche is already ready.
- * Pass nicheId for one niche, or omit to requeue recent AR niches.
+ * Daily cron: one scrape job per (active niche, country) pair that doesn't
+ * already have one pending/claimed. Terms are curated ahead of time — no
+ * per-scrape Gemini enrichment step, so jobs start "pending" immediately.
+ */
+export const enqueueDailyScrapeJobs = internalMutation({
+  args: {},
+  returns: v.object({ enqueued: v.number() }),
+  handler: async (ctx) => {
+    const niches = await ctx.db
+      .query("radarNiches")
+      .withIndex("by_active", (q) => q.eq("isActive", true))
+      .collect();
+
+    let enqueued = 0;
+    for (const niche of niches) {
+      for (const { country, terms } of niche.scrapeTermsByCountry) {
+        if (terms.length === 0) continue;
+        let inFlight = false;
+        for (const status of ["pending", "claimed"] as const) {
+          const existing = await ctx.db
+            .query("radarNicheScrapeJobs")
+            .withIndex("by_niche_country_status", (q) =>
+              q
+                .eq("nicheId", niche._id)
+                .eq("country", country)
+                .eq("status", status),
+            )
+            .first();
+          if (existing) {
+            inFlight = true;
+            break;
+          }
+        }
+        if (inFlight) continue;
+
+        await ctx.db.insert("radarNicheScrapeJobs", {
+          nicheId: niche._id,
+          country,
+          terms,
+          status: "pending",
+          createdAt: Date.now(),
+        });
+        enqueued += 1;
+      }
+    }
+
+    if (enqueued > 0) {
+      // Best-effort: kick the GitHub Actions worker now instead of waiting
+      // for its poll — see githubDispatch.ts. No-ops silently without
+      // GITHUB_ACTIONS_TOKEN configured; the scheduled poll still covers it.
+      await ctx.scheduler.runAfter(
+        0,
+        internal.radar.githubDispatch.dispatchScrapeWorkflow,
+        {},
+      );
+    }
+
+    return { enqueued };
+  },
+});
+
+/**
+ * Admin/worker: force-queue job(s) even if a niche already has ads —
+ * pass nicheId to scope to one niche (all its countries, or one country),
+ * or omit to force every active niche.
  */
 export const forceEnqueueScrapeJobs = mutation({
   args: {
     secret: v.string(),
     nicheId: v.optional(v.id("radarNiches")),
+    country: v.optional(v.string()),
   },
   returns: v.object({
     enqueued: v.number(),
@@ -324,12 +175,12 @@ export const forceEnqueueScrapeJobs = mutation({
       if (!one) throw new Error("Niche not found");
       niches.push(one);
     } else {
-      const recent = await ctx.db
-        .query("radarNiches")
-        .withIndex("by_country_updated", (q) => q.eq("country", AR))
-        .order("desc")
-        .take(20);
-      niches.push(...recent);
+      niches.push(
+        ...(await ctx.db
+          .query("radarNiches")
+          .withIndex("by_active", (q) => q.eq("isActive", true))
+          .collect()),
+      );
     }
 
     const now = Date.now();
@@ -337,13 +188,21 @@ export const forceEnqueueScrapeJobs = mutation({
     let enqueued = 0;
 
     for (const niche of niches) {
-      // Unstick claimed (mid-scrape) or enriching (stuck term-expansion)
-      // jobs so force can proceed.
-      for (const status of ["claimed", "enriching"] as const) {
+      const countryEntries = args.country
+        ? niche.scrapeTermsByCountry.filter((c) => c.country === args.country)
+        : niche.scrapeTermsByCountry;
+
+      for (const { country, terms } of countryEntries) {
+        if (terms.length === 0) continue;
+
+        // Unstick a claimed (mid-scrape) job so force can proceed.
         const stuck = await ctx.db
           .query("radarNicheScrapeJobs")
-          .withIndex("by_niche_status", (q) =>
-            q.eq("nicheId", niche._id).eq("status", status),
+          .withIndex("by_niche_country_status", (q) =>
+            q
+              .eq("nicheId", niche._id)
+              .eq("country", country)
+              .eq("status", "claimed"),
           )
           .collect();
         for (const job of stuck) {
@@ -353,26 +212,36 @@ export const forceEnqueueScrapeJobs = mutation({
             error: "superseded_by_force",
           });
         }
-      }
 
-      const pending = await ctx.db
-        .query("radarNicheScrapeJobs")
-        .withIndex("by_niche_status", (q) =>
-          q.eq("nicheId", niche._id).eq("status", "pending"),
-        )
-        .first();
-      if (pending) {
-        nicheIds.push(niche._id);
-        continue;
-      }
+        const pending = await ctx.db
+          .query("radarNicheScrapeJobs")
+          .withIndex("by_niche_country_status", (q) =>
+            q
+              .eq("nicheId", niche._id)
+              .eq("country", country)
+              .eq("status", "pending"),
+          )
+          .first();
+        if (pending) continue;
 
-      await createScrapeJob(ctx, niche._id, jobTermsFromNiche(niche));
-      await ctx.db.patch(niche._id, {
-        status: "pending_scrape",
-        updatedAt: now,
-      });
+        await ctx.db.insert("radarNicheScrapeJobs", {
+          nicheId: niche._id,
+          country,
+          terms,
+          status: "pending",
+          createdAt: now,
+        });
+        enqueued += 1;
+      }
       nicheIds.push(niche._id);
-      enqueued += 1;
+    }
+
+    if (enqueued > 0) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.radar.githubDispatch.dispatchScrapeWorkflow,
+        {},
+      );
     }
 
     return { enqueued, nicheIds };
@@ -380,16 +249,17 @@ export const forceEnqueueScrapeJobs = mutation({
 });
 
 /**
- * Worker: claim next pending scrape job.
- *
- * Pass `nicheId` to claim that niche's job specifically instead of the
- * oldest pending job in the whole queue — without it, `--force-niche`
- * on the worker only *enqueues* the target niche's job; whichever job is
- * oldest overall still gets claimed first, silently scraping the wrong
- * niche if anything else was already pending.
+ * Worker: claim next pending scrape job. Pass `nicheId`/`country` to claim
+ * a specific (niche, country) job rather than the oldest pending job
+ * overall — used by `--force-niche` so it scrapes the intended target
+ * instead of whatever else happens to be queued.
  */
 export const claimNextScrapeJob = mutation({
-  args: { secret: v.string(), nicheId: v.optional(v.id("radarNiches")) },
+  args: {
+    secret: v.string(),
+    nicheId: v.optional(v.id("radarNiches")),
+    country: v.optional(v.string()),
+  },
   returns: v.union(
     v.null(),
     v.object({
@@ -406,18 +276,31 @@ export const claimNextScrapeJob = mutation({
       throw new Error("Unauthorized");
     }
 
-    const job = args.nicheId
-      ? await ctx.db
-          .query("radarNicheScrapeJobs")
-          .withIndex("by_niche_status", (q) =>
-            q.eq("nicheId", args.nicheId!).eq("status", "pending"),
-          )
-          .first()
-      : await ctx.db
-          .query("radarNicheScrapeJobs")
-          .withIndex("by_status_created", (q) => q.eq("status", "pending"))
-          .order("asc")
-          .first();
+    let job: Doc<"radarNicheScrapeJobs"> | null = null;
+    if (args.nicheId && args.country) {
+      job = await ctx.db
+        .query("radarNicheScrapeJobs")
+        .withIndex("by_niche_country_status", (q) =>
+          q
+            .eq("nicheId", args.nicheId!)
+            .eq("country", args.country!)
+            .eq("status", "pending"),
+        )
+        .first();
+    } else if (args.nicheId) {
+      job = await ctx.db
+        .query("radarNicheScrapeJobs")
+        .withIndex("by_niche_status", (q) =>
+          q.eq("nicheId", args.nicheId!).eq("status", "pending"),
+        )
+        .first();
+    } else {
+      job = await ctx.db
+        .query("radarNicheScrapeJobs")
+        .withIndex("by_status_created", (q) => q.eq("status", "pending"))
+        .order("asc")
+        .first();
+    }
     if (!job) return null;
 
     const niche = await ctx.db.get(job.nicheId);
@@ -441,7 +324,7 @@ export const claimNextScrapeJob = mutation({
       jobId: job._id,
       nicheId: niche._id,
       terms: job.terms,
-      country: niche.country,
+      country: job.country,
       label: niche.label,
     };
   },
@@ -476,7 +359,7 @@ export const completeScrapeJob = mutation({
         await ctx.db
           .query("radarNicheAds")
           .withIndex("by_niche", (q) => q.eq("nicheId", niche._id))
-          .take(500)
+          .take(2000)
       ).length;
       await ctx.db.patch(niche._id, {
         adCount: linkCount,
@@ -486,74 +369,5 @@ export const completeScrapeJob = mutation({
       });
     }
     return null;
-  },
-});
-
-/**
- * Periodic sweep: re-enqueue any niche stuck below MIN_ADS_READY that isn't
- * already scraping or queued. Covers niches whose only scrape landed too few
- * gate-passing ads and that no new user has attached to since (previously
- * these only got re-enqueued when a new user joined the same niche).
- */
-export const sweepUnderfilledNiches = internalMutation({
-  args: {},
-  returns: v.object({ enqueued: v.number() }),
-  handler: async (ctx) => {
-    const candidates = await ctx.db
-      .query("radarNiches")
-      .withIndex("by_status", (q) => q.eq("status", "pending_scrape"))
-      .take(50);
-
-    let enqueued = 0;
-    for (const niche of candidates) {
-      if (await enqueueScrapeIfNeeded(ctx, niche._id)) enqueued += 1;
-    }
-    return { enqueued };
-  },
-});
-
-/**
- * Daily freshness sweep: re-enqueue every "ready" niche too, not just
- * under-filled ones — enqueueScrapeIfNeeded deliberately refuses to touch a
- * niche that's already ready (to avoid re-scraping on every user visit), so
- * without this a niche that reached "ready" once would never get scraped
- * again and could show increasingly stale ads indefinitely. Bounded to 200
- * niches per run — needs real pagination if the niche count grows well
- * past that.
- */
-export const refreshAllReadyNiches = internalMutation({
-  args: {},
-  returns: v.object({ enqueued: v.number() }),
-  handler: async (ctx) => {
-    const readyNiches = await ctx.db
-      .query("radarNiches")
-      .withIndex("by_status", (q) => q.eq("status", "ready"))
-      .take(200);
-
-    let enqueued = 0;
-    for (const niche of readyNiches) {
-      let hasJobInFlight = false;
-      for (const status of ["enriching", "pending", "claimed"] as const) {
-        const existing = await ctx.db
-          .query("radarNicheScrapeJobs")
-          .withIndex("by_niche_status", (q) =>
-            q.eq("nicheId", niche._id).eq("status", status),
-          )
-          .first();
-        if (existing) {
-          hasJobInFlight = true;
-          break;
-        }
-      }
-      if (hasJobInFlight) continue;
-
-      await createScrapeJob(ctx, niche._id, jobTermsFromNiche(niche));
-      await ctx.db.patch(niche._id, {
-        status: "pending_scrape",
-        updatedAt: Date.now(),
-      });
-      enqueued += 1;
-    }
-    return { enqueued };
   },
 });

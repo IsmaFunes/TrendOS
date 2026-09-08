@@ -1,7 +1,8 @@
 "use node";
 
 /**
- * Gemini personalization: scrape-term expansion + per-user ad ranking.
+ * Gemini personalization: one-time niche term localization (seed time) +
+ * the niche-shared ad relevance pass.
  */
 
 import { v } from "convex/values";
@@ -11,7 +12,7 @@ import type { Id } from "../_generated/dataModel";
 import { fetchJsonWithRetry, structuredLog } from "./http";
 import {
   buildNicheRelevancePrompt,
-  buildScrapeTermsPrompt,
+  buildNicheTermLocalizationPrompt,
   extractJsonPayload,
   GEMINI_ADS_MODEL,
   normalizeScrapeTerms,
@@ -75,8 +76,7 @@ async function callGeminiJson(
         maxOutputTokens: options.maxOutputTokens,
         // gemini-3.6-flash is a thinking model — its reasoning tokens come
         // out of the same maxOutputTokens budget. Without capping this, a
-        // longer/more-reasoning-heavy prompt (e.g. the "classify niche as
-        // category vs specific product" step) can spend the whole budget
+        // longer/more-reasoning-heavy prompt can spend the whole budget
         // thinking and get cut off before ever emitting the JSON answer —
         // the same MAX_TOKENS failure already fixed once for the product-
         // extraction call in investigate.ts.
@@ -127,25 +127,10 @@ async function callGeminiJson(
   return text;
 }
 
-type EnrichResult = {
-  ok: boolean;
-  terms: string[];
-  skipped?: string;
-};
-
-type NicheEnrichRow = {
-  nicheId: Id<"radarNiches">;
-  keywords: string[];
-  scrapeTerms?: string[];
-  label: string;
-  jobId?: Id<"radarNicheScrapeJobs">;
-  jobStatus?: string;
-};
-
 type NicheRelevanceContext = {
   fingerprint: string;
   label: string;
-  keywords: string[];
+  gateTerms: string[];
   ads: Array<{
     id: string;
     pageName: string;
@@ -165,54 +150,33 @@ type NicheRelevanceResult = {
   message?: string;
 };
 
-/** Expand Meta Ad Library search terms for a niche (fail-soft without key). */
-export const enrichNicheScrapeTerms = internalAction({
+/**
+ * One-time, seed-time term localization — translates/adapts a niche's
+ * hand-curated AR-Spanish base terms into another country's ad-library
+ * language. Called only from convex/admin/seedNicheCatalog.ts, never per
+ * scrape (niches are a fixed catalog, terms don't change on their own).
+ */
+export const localizeNicheTerms = internalAction({
   args: {
-    nicheId: v.id("radarNiches"),
-    jobId: v.optional(v.id("radarNicheScrapeJobs")),
+    label: v.string(),
     description: v.optional(v.string()),
+    baseTerms: v.array(v.string()),
+    targetCountry: v.string(),
+    targetLanguage: v.string(),
   },
-  returns: v.object({
-    ok: v.boolean(),
-    terms: v.array(v.string()),
-    skipped: v.optional(v.string()),
-  }),
-  handler: async (ctx, args): Promise<EnrichResult> => {
-    const niche: NicheEnrichRow | null = await ctx.runQuery(
-      internal.radar.adRanking.loadNicheForEnrich,
-      {
-        nicheId: args.nicheId,
-        jobId: args.jobId,
-      },
-    );
-    if (!niche) {
-      return { ok: false, terms: [], skipped: "niche_missing" };
-    }
-
-    const fallback: string[] = niche.scrapeTerms?.length
-      ? niche.scrapeTerms
-      : niche.keywords;
-
-    // The job (if any) was created "enriching" — NOT claimable — precisely
-    // so the worker can't grab it with the raw, un-expanded keyword phrase
-    // before this finishes. Whatever happens below, always flip it to
-    // "pending" with at least the fallback terms — a stuck "enriching" job
-    // that never unlocks is worse than one scraped with weaker terms.
+  returns: v.object({ ok: v.boolean(), terms: v.array(v.string()) }),
+  handler: async (_ctx, args) => {
     if (!process.env.GEMINI_API_KEY?.trim()) {
-      await ctx.runMutation(internal.radar.adRanking.applyScrapeTerms, {
-        nicheId: args.nicheId,
-        jobId: args.jobId,
-        terms: fallback,
-      });
-      return { ok: false, terms: fallback, skipped: "no_gemini_key" };
+      return { ok: false, terms: args.baseTerms };
     }
-
     try {
       const text = await callGeminiJson(
-        buildScrapeTermsPrompt({
-          keywords: niche.keywords,
+        buildNicheTermLocalizationPrompt({
+          label: args.label,
           description: args.description,
-          label: niche.label,
+          baseTerms: args.baseTerms,
+          targetCountry: args.targetCountry,
+          targetLanguage: args.targetLanguage,
         }),
         {
           label: "terms",
@@ -221,28 +185,14 @@ export const enrichNicheScrapeTerms = internalAction({
         },
       );
       const payload = extractJsonPayload(text) as { terms?: unknown };
-      const terms = normalizeScrapeTerms(payload.terms, fallback);
-      await ctx.runMutation(internal.radar.adRanking.applyScrapeTerms, {
-        nicheId: args.nicheId,
-        jobId: args.jobId,
-        terms,
-      });
+      const terms = normalizeScrapeTerms(payload.terms, args.baseTerms);
       return { ok: true, terms };
     } catch (err) {
       console.warn(
-        "enrichNicheScrapeTerms failed:",
+        "localizeNicheTerms failed:",
         err instanceof Error ? err.message : err,
       );
-      await ctx.runMutation(internal.radar.adRanking.applyScrapeTerms, {
-        nicheId: args.nicheId,
-        jobId: args.jobId,
-        terms: fallback,
-      });
-      return {
-        ok: false,
-        terms: fallback,
-        skipped: err instanceof Error ? err.message : "gemini_error",
-      };
+      return { ok: false, terms: args.baseTerms };
     }
   },
 });
@@ -292,7 +242,7 @@ export const refreshNicheAdRelevance = internalAction({
       const text = await callGeminiJson(
         buildNicheRelevancePrompt({
           label: context.label,
-          keywords: context.keywords,
+          keywords: context.gateTerms,
           ads: context.ads,
         }),
         {

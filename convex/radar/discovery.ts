@@ -212,6 +212,9 @@ export const acceptDemandCandidate = internalMutation({
       return { skipped: true, reason: "product_cap" };
     }
 
+    // Legacy discovery path (not on the MVP hot path — see CLAUDE.md): a
+    // store's niche is now a fixed catalog pick, not typed keywords/
+    // exclusions, so this filter degrades to description-only signal.
     let niche: NicheInput = {};
     if (args.userId) {
       const profile = await ctx.db
@@ -219,11 +222,7 @@ export const acceptDemandCandidate = internalMutation({
         .withIndex("by_user", (q) => q.eq("userId", args.userId!))
         .unique();
       if (profile) {
-        niche = {
-          keywords: profile.nicheKeywords,
-          description: profile.description,
-          excludedKeywords: profile.excludedKeywords,
-        };
+        niche = { description: profile.description };
       }
     }
 

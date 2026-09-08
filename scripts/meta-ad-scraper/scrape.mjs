@@ -1,17 +1,21 @@
 /**
- * Meta Ad Library scraper — Argentina only.
+ * Meta Ad Library scraper — fixed niche catalog, multi-country.
  *
- * Default: claim pending niche scrape jobs from Convex and ingest into that niche.
+ * Default: claim pending (niche, country) scrape jobs from Convex and
+ * ingest into that niche. Jobs are created by a daily cron
+ * (convex/radar/niches.ts enqueueDailyScrapeJobs) across every niche in
+ * the catalog and every country it targets — there is no per-user trigger.
  *
  *   META_ADS_INGEST_SECRET=... CONVEX_URL=... npm run scrape:meta-ads
  *
- * Force re-scrape (even if niche already ready):
+ * Force re-scrape (even if niche already has ads):
  *   npm run scrape:meta-ads -- --force
  *   npm run scrape:meta-ads -- --force-niche "<nicheId>"
+ *   npm run scrape:meta-ads -- --force-niche "<nicheId>" --force-country US
  *
  * Manual debug (no niche queue):
  *   npm run scrape:meta-ads -- --term "termo" --limit 30
- *   npm run scrape:meta-ads -- --term "termo" --niche-id "<id>"
+ *   npm run scrape:meta-ads -- --term "termo" --country US --niche-id "<id>"
  *
  * Optional: META_ADS_PROXY_SERVER, META_ADS_HEADED=1, META_ADS_DEBUG=1, --seed
  */
@@ -22,27 +26,41 @@ import { anyApi } from "convex/server";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const COUNTRY = "AR";
+const DEFAULT_COUNTRY = "AR";
 
 /**
- * Target ads per niche job. Raised from the original 15 — at 15, the first
- * one or two productive search terms routinely ate the whole budget before
- * the rest of Gemini's ~10 generated terms (covering different sub-products)
- * ever ran, which is what made niche feeds feel narrow. 50 gives enough
- * headroom for scrapeTerms' round-robin pass to actually cover most terms.
+ * Target ads per (niche, country) job. Niches are now a shared, continuously
+ * refreshed pool rather than something re-earned per user scrape, so this
+ * can afford to be generous — tune further once real multi-country run
+ * timings are observed in production.
  */
-const DEFAULT_NICHE_AD_TARGET = 50;
+const DEFAULT_NICHE_AD_TARGET = 60;
+
+/** Locale/Accept-Language per scraped country — see convex/radar/metaAds.ts SCRAPE_COUNTRIES. */
+const LOCALE_BY_COUNTRY = {
+  AR: { locale: "es-AR", acceptLanguage: "es-AR,es;q=0.9,en;q=0.8" },
+  US: { locale: "en-US", acceptLanguage: "en-US,en;q=0.9" },
+  BR: { locale: "pt-BR", acceptLanguage: "pt-BR,pt;q=0.9,en;q=0.8" },
+  MX: { locale: "es-MX", acceptLanguage: "es-MX,es;q=0.9,en;q=0.8" },
+  ES: { locale: "es-ES", acceptLanguage: "es-ES,es;q=0.9,en;q=0.8" },
+};
+
+function localeFor(country) {
+  return LOCALE_BY_COUNTRY[country] ?? LOCALE_BY_COUNTRY[DEFAULT_COUNTRY];
+}
 
 function parseArgs(argv) {
   const out = {
     terms: [],
     limit: DEFAULT_NICHE_AD_TARGET,
+    country: DEFAULT_COUNTRY,
     seedFile: process.env.META_ADS_SEED_FILE,
     nicheId: undefined,
     queue: true,
     maxJobs: 3,
     force: false,
     forceNicheId: undefined,
+    forceCountry: undefined,
   };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
@@ -51,6 +69,8 @@ function parseArgs(argv) {
       out.queue = false;
     } else if (a === "--limit" && argv[i + 1]) {
       out.limit = Number(argv[++i]) || 40;
+    } else if (a === "--country" && argv[i + 1]) {
+      out.country = argv[++i].toUpperCase();
     } else if (a === "--seed" && argv[i + 1]) {
       out.seedFile = argv[++i];
       out.queue = false;
@@ -69,6 +89,8 @@ function parseArgs(argv) {
       out.force = true;
       out.forceNicheId = argv[++i];
       out.queue = true;
+    } else if (a === "--force-country" && argv[i + 1]) {
+      out.forceCountry = argv[++i].toUpperCase();
     }
   }
   return out;
@@ -83,9 +105,9 @@ function clientAndSecret() {
   return { client: new ConvexHttpClient(url), secret };
 }
 
-function libraryUrl(term) {
+function libraryUrl(term, country) {
   const q = encodeURIComponent(term);
-  return `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=${COUNTRY}&q=${q}&search_type=keyword_unordered&media_type=all`;
+  return `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=${country}&q=${q}&search_type=keyword_unordered&media_type=all`;
 }
 
 function asText(value) {
@@ -299,8 +321,18 @@ function extractAdsFromGraphqlJson(json, term) {
   return out;
 }
 
-async function scrapeTerm(page, term, limit, debug) {
-  const url = libraryUrl(term);
+/**
+ * Scroll budget: keep going up to MAX_SCROLL_ITERATIONS, but stop early once
+ * MAX_NO_GROWTH_SCROLLS consecutive scrolls add nothing new — niches are no
+ * longer scraped on a user's clock, so it's worth scrolling much deeper than
+ * the old fixed 10 iterations to actually harvest a term's full result set,
+ * as long as it's still finding new ads.
+ */
+const MAX_SCROLL_ITERATIONS = 40;
+const MAX_NO_GROWTH_SCROLLS = 4;
+
+async function scrapeTerm(page, term, limit, country, debug) {
+  const url = libraryUrl(term, country);
   console.log(`Opening ${url}`);
 
   const collected = [];
@@ -363,10 +395,19 @@ async function scrapeTerm(page, term, limit, debug) {
     }
   }
 
-  for (let i = 0; i < 10; i++) {
+  let lastCount = 0;
+  let noGrowthStreak = 0;
+  for (let i = 0; i < MAX_SCROLL_ITERATIONS; i++) {
     await page.mouse.wheel(0, 3200);
     await page.waitForTimeout(1500);
     if (collected.length >= limit) break;
+    if (collected.length === lastCount) {
+      noGrowthStreak += 1;
+      if (noGrowthStreak >= MAX_NO_GROWTH_SCROLLS) break;
+    } else {
+      noGrowthStreak = 0;
+      lastCount = collected.length;
+    }
   }
   await page.waitForTimeout(2500);
   page.off("response", onResponse);
@@ -374,14 +415,14 @@ async function scrapeTerm(page, term, limit, debug) {
   if (debug) {
     const dir = resolve("scripts/meta-ad-scraper/debug");
     mkdirSync(dir, { recursive: true });
-    const safe = term.replace(/\W+/g, "_").slice(0, 40);
+    const safe = `${country}_${term}`.replace(/\W+/g, "_").slice(0, 60);
     writeFileSync(resolve(dir, `${safe}.html`), await page.content(), "utf8");
     console.log(`  debug: graphqlHits=${graphqlHits}`);
   }
 
   const ads = collected.slice(0, limit);
   console.log(
-    `  → ${ads.length} ads for "${term}" (graphql responses: ${graphqlHits})`,
+    `  → ${ads.length} ads for "${term}" [${country}] (graphql responses: ${graphqlHits})`,
   );
   // Meta responded substantially but nothing was extractable — genuinely
   // sparse results don't usually generate this much graphql traffic for
@@ -391,19 +432,19 @@ async function scrapeTerm(page, term, limit, debug) {
   // response Meta doesn't serve to a normal browser session.
   if (ads.length === 0 && graphqlHits >= 10) {
     console.warn(
-      `  ⚠ "${term}": ${graphqlHits} graphql responses yielded 0 ads — possible degraded/blocked response, not necessarily "no results". Re-run with META_ADS_DEBUG=1 to inspect.`,
+      `  ⚠ "${term}" [${country}]: ${graphqlHits} graphql responses yielded 0 ads — possible degraded/blocked response, not necessarily "no results". Re-run with META_ADS_DEBUG=1 to inspect.`,
     );
   }
   return ads;
 }
 
-async function ingest(ads, nicheId) {
+async function ingest(ads, nicheId, country) {
   const { client, secret } = clientAndSecret();
   const result = await client.mutation(
     anyApi.radar.metaAds.ingestScrapedAdsFromWorker,
     {
       secret,
-      country: COUNTRY,
+      country,
       nicheId,
       ads,
     },
@@ -415,36 +456,41 @@ async function ingest(ads, nicheId) {
 async function launchBrowser() {
   const proxy = process.env.META_ADS_PROXY_SERVER;
   const headed = process.env.META_ADS_HEADED === "1";
-  const browser = await chromium.launch({
+  return chromium.launch({
     headless: !headed,
     proxy: proxy ? { server: proxy } : undefined,
     args: ["--disable-blink-features=AutomationControlled"],
   });
+}
+
+/** New context+page for a given country's locale — one per job. */
+async function newPageForCountry(browser, country) {
+  const { locale, acceptLanguage } = localeFor(country);
   const context = await browser.newContext({
-    locale: "es-AR",
+    locale,
     userAgent:
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     viewport: { width: 1400, height: 960 },
     extraHTTPHeaders: {
-      "Accept-Language": "es-AR,es;q=0.9,en;q=0.8",
+      "Accept-Language": acceptLanguage,
     },
   });
   await context.addInitScript(() => {
     Object.defineProperty(navigator, "webdriver", { get: () => undefined });
   });
-  return { browser, page: await context.newPage() };
+  return { context, page: await context.newPage() };
 }
 
 /**
  * Two passes. First, round-robin with a per-term cap so one generic,
  * high-volume term (e.g. "mancuernas") can't consume the entire niche
- * budget and starve the other Gemini-generated terms that cover different
+ * budget and starve the other curated terms covering different
  * sub-products — that's what was making niche feeds feel narrow even with
  * a diverse term list. Second, an uncapped pass over the same terms to
  * spend any budget a dead term (0 results) left unused, so raising the cap
  * for diversity doesn't cost total volume.
  */
-async function scrapeTerms(page, terms, limit, debug) {
+async function scrapeTerms(page, terms, limit, country, debug) {
   const byId = new Map();
   const perTermCap = Math.max(6, Math.ceil(limit / terms.length) + 2);
   // Track which terms actually returned something in pass 1 — a term that
@@ -460,7 +506,7 @@ async function scrapeTerms(page, terms, limit, debug) {
     const remaining = limit - byId.size;
     const termLimit = Math.min(perTermCap, remaining);
     try {
-      const batch = await scrapeTerm(page, term, termLimit, debug);
+      const batch = await scrapeTerm(page, term, termLimit, country, debug);
       if (batch.length > 0) productiveTerms.add(term);
       for (const ad of batch) {
         if (!byId.has(ad.externalAdId)) byId.set(ad.externalAdId, ad);
@@ -476,7 +522,7 @@ async function scrapeTerms(page, terms, limit, debug) {
       if (!productiveTerms.has(term)) continue; // confirmed dead in pass 1
       const remaining = limit - byId.size;
       try {
-        const batch = await scrapeTerm(page, term, remaining, debug);
+        const batch = await scrapeTerm(page, term, remaining, country, debug);
         for (const ad of batch) {
           if (!byId.has(ad.externalAdId)) byId.set(ad.externalAdId, ad);
         }
@@ -489,11 +535,11 @@ async function scrapeTerms(page, terms, limit, debug) {
   return [...byId.values()].slice(0, limit);
 }
 
-async function forceEnqueue(nicheId) {
+async function forceEnqueue(nicheId, country) {
   const { client, secret } = clientAndSecret();
   const result = await client.mutation(
     anyApi.radar.niches.forceEnqueueScrapeJobs,
-    { secret, nicheId },
+    { secret, nicheId, country },
   );
   console.log(
     `Force-enqueued ${result.enqueued} job(s) for ${result.nicheIds.length} niche(s).`,
@@ -506,31 +552,26 @@ function sleep(ms) {
 }
 
 /**
- * A freshly (force-)enqueued job starts "enriching" — not yet claimable —
- * until Gemini finishes expanding its search terms (convex/radar/niches.ts
- * createScrapeJob, convex/radar/geminiAds.ts enrichNicheScrapeTerms).
- * That's usually a few seconds but can take up to ~80s in the worst case
- * (retries on a slow Gemini response). Claiming exactly once right after
- * forceEnqueue() reliably lost this race — "Force-enqueued 1 job(s)"
- * immediately followed by "No pending niche scrape jobs." — so retry with
- * backoff instead of giving up on the very first attempt.
+ * Force-enqueued jobs start "pending" immediately (terms are curated ahead
+ * of time — no Gemini enrichment step to wait on anymore), but a retry loop
+ * is still worth keeping as a defensive measure against any transient
+ * consistency lag right after the enqueue mutation commits.
  */
-async function claimWithRetryForForce(client, secret, targetNicheId) {
-  const maxWaitMs = 90_000;
-  let delayMs = 2_000;
+async function claimWithRetryForForce(client, secret, targetNicheId, targetCountry) {
+  const maxWaitMs = 20_000;
+  let delayMs = 1_000;
   const start = Date.now();
   for (;;) {
     const job = await client.mutation(anyApi.radar.niches.claimNextScrapeJob, {
       secret,
       nicheId: targetNicheId,
+      country: targetCountry,
     });
     if (job) return job;
     if (Date.now() - start >= maxWaitMs) return null;
-    console.log(
-      `  Job still enriching search terms, retrying in ${delayMs / 1000}s...`,
-    );
+    console.log(`  No job claimable yet, retrying in ${delayMs / 1000}s...`);
     await sleep(delayMs);
-    delayMs = Math.min(delayMs * 1.5, 8_000);
+    delayMs = Math.min(delayMs * 1.5, 5_000);
   }
 }
 
@@ -542,15 +583,20 @@ async function runQueue(args, debug) {
     ? args.forceNicheId || args.nicheId
     : undefined;
   if (args.force) {
-    await forceEnqueue(targetNicheId);
+    await forceEnqueue(targetNicheId, args.forceCountry);
   }
-  const { browser, page } = await launchBrowser();
+  const browser = await launchBrowser();
   let processed = 0;
   try {
     for (let i = 0; i < args.maxJobs; i++) {
       const job =
         args.force && i === 0
-          ? await claimWithRetryForForce(client, secret, targetNicheId)
+          ? await claimWithRetryForForce(
+              client,
+              secret,
+              targetNicheId,
+              args.forceCountry,
+            )
           : await client.mutation(anyApi.radar.niches.claimNextScrapeJob, {
               secret,
               nicheId: targetNicheId,
@@ -560,10 +606,11 @@ async function runQueue(args, debug) {
         break;
       }
       console.log(
-        `Job ${job.jobId} niche=${job.label} terms=${job.terms.join(", ")}`,
+        `Job ${job.jobId} niche=${job.label} country=${job.country} terms=${job.terms.join(", ")}`,
       );
+      const { context, page } = await newPageForCountry(browser, job.country);
       try {
-        const ads = await scrapeTerms(page, job.terms, args.limit, debug);
+        const ads = await scrapeTerms(page, job.terms, args.limit, job.country, debug);
         if (ads.length === 0) {
           await client.mutation(anyApi.radar.niches.completeScrapeJob, {
             secret,
@@ -573,7 +620,7 @@ async function runQueue(args, debug) {
           });
           console.warn("  zero ads — marked failed (retry later via new job)");
         } else {
-          await ingest(ads, job.nicheId);
+          await ingest(ads, job.nicheId, job.country);
           await client.mutation(anyApi.radar.niches.completeScrapeJob, {
             secret,
             jobId: job.jobId,
@@ -589,6 +636,8 @@ async function runQueue(args, debug) {
           error: err.message,
         });
         console.warn(`  job failed: ${err.message}`);
+      } finally {
+        await context.close();
       }
     }
   } finally {
@@ -605,7 +654,7 @@ async function main() {
     const path = resolve(args.seedFile);
     const ads = JSON.parse(readFileSync(path, "utf8"));
     console.log(`Loaded ${ads.length} ads from seed ${path}`);
-    await ingest(ads, args.nicheId);
+    await ingest(ads, args.nicheId, args.country);
     return;
   }
 
@@ -619,16 +668,21 @@ async function main() {
     process.exit(1);
   }
 
-  const { browser, page } = await launchBrowser();
+  const browser = await launchBrowser();
   try {
-    const unique = await scrapeTerms(page, args.terms, args.limit, debug);
-    console.log(`Total unique ads: ${unique.length}`);
-    if (unique.length === 0) {
-      console.warn("No ads scraped. Try META_ADS_HEADED=1 or a residential proxy.");
-      process.exitCode = 2;
-      return;
+    const { context, page } = await newPageForCountry(browser, args.country);
+    try {
+      const unique = await scrapeTerms(page, args.terms, args.limit, args.country, debug);
+      console.log(`Total unique ads: ${unique.length}`);
+      if (unique.length === 0) {
+        console.warn("No ads scraped. Try META_ADS_HEADED=1 or a residential proxy.");
+        process.exitCode = 2;
+        return;
+      }
+      await ingest(unique, args.nicheId, args.country);
+    } finally {
+      await context.close();
     }
-    await ingest(unique, args.nicheId);
   } finally {
     await browser.close();
   }

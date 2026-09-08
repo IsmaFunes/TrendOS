@@ -36,9 +36,6 @@ export default defineSchema({
     userId: v.id("users"),
     businessName: v.string(),
     description: v.optional(v.string()),
-    nicheKeywords: v.optional(v.array(v.string())),
-    /** Products / themes the business will not sell. */
-    excludedKeywords: v.optional(v.array(v.string())),
     channels: v.optional(v.array(v.string())),
     goal: v.optional(
       v.union(
@@ -56,11 +53,13 @@ export default defineSchema({
     hasWarehouseStorage: v.optional(v.boolean()),
     storageNotes: v.optional(v.string()),
     logisticsConstraints: v.optional(v.string()),
-    /** Shared niche bucket for ad reuse across similar stores. */
-    nicheId: v.optional(v.id("radarNiches")),
+    /**
+     * Fixed catalog niches this store follows — length capped server-side
+     * (1 for free plan, up to 3 for pro; convex/users.ts).
+     */
+    nicheIds: v.array(v.id("radarNiches")),
     updatedAt: v.number(),
-  }).index("by_user", ["userId"])
-    .index("by_niche", ["nicheId"]),
+  }).index("by_user", ["userId"]),
 
   categories: defineTable({
     slug: v.string(),
@@ -361,28 +360,44 @@ export default defineSchema({
     .index("by_product", ["productId"])
     .index("by_active", ["isActive"]),
 
-  // ─── Niche buckets (ad reuse across similar stores) ───────────────
+  // ─── Fixed niche catalog (curated, pre-scraped, shared by all users) ──
 
+  /**
+   * A fixed, admin-curated set of niches users pick from at onboarding —
+   * replaces the old per-user typed-keyword + Jaccard-fuzzy-matched bucket
+   * system. Ads are scraped continuously in the background (daily cron,
+   * across every country in scrapeTermsByCountry) so a niche already has
+   * ads by the time any user selects it.
+   */
   radarNiches: defineTable({
-    country: v.string(),
-    nicheKey: v.string(),
-    keywords: v.array(v.string()),
-    /** Gemini-expanded Meta Ad Library search terms (optional). */
-    scrapeTerms: v.optional(v.array(v.string())),
+    slug: v.string(),
     label: v.string(),
+    description: v.optional(v.string()),
+    /**
+     * Curated Meta Ad Library search terms per country — ad body text is in
+     * the advertiser's local language, so a single term list can't serve
+     * AR/MX/ES-Spanish, pt-BR and en-US at once. Localized once at seed
+     * time (convex/admin/seedNicheCatalog.ts), not regenerated per scrape.
+     */
+    scrapeTermsByCountry: v.array(
+      v.object({ country: v.string(), terms: v.array(v.string()) }),
+    ),
     adCount: v.number(),
     lastScrapedAt: v.optional(v.number()),
+    /** Reflects scrape health, not per-user readiness — niches are curated. */
     status: v.union(
       v.literal("ready"),
       v.literal("pending_scrape"),
       v.literal("scraping"),
     ),
+    /** Lets a niche be pulled from onboarding without deleting its ad history. */
+    isActive: v.boolean(),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
-    .index("by_key", ["country", "nicheKey"])
-    .index("by_status", ["status"])
-    .index("by_country_updated", ["country", "updatedAt"]),
+    .index("by_slug", ["slug"])
+    .index("by_active", ["isActive"])
+    .index("by_status", ["status"]),
 
   /**
    * Niche-shared Gemini relevance pass — computed once per niche bucket and
@@ -417,16 +432,12 @@ export default defineSchema({
 
   radarNicheScrapeJobs: defineTable({
     nicheId: v.id("radarNiches"),
+    /** Which of the niche's scrapeTermsByCountry entries this job covers. */
+    country: v.string(),
     terms: v.array(v.string()),
-    /**
-     * "enriching" — just created, Gemini term-expansion still running;
-     * NOT claimable yet (claimNextScrapeJob only looks at "pending").
-     * Without this stage, the worker could claim the job with its raw,
-     * un-expanded keyword phrase before enrichment finishes — a race that
-     * silently produced narrow, single-literal-phrase scrapes.
-     */
+    // Terms are curated ahead of time (seedNicheCatalog.ts) — no more
+    // Gemini per-scrape enrichment step, so no "enriching" pre-claim status.
     status: v.union(
-      v.literal("enriching"),
       v.literal("pending"),
       v.literal("claimed"),
       v.literal("completed"),
@@ -438,7 +449,8 @@ export default defineSchema({
     error: v.optional(v.string()),
   })
     .index("by_status_created", ["status", "createdAt"])
-    .index("by_niche_status", ["nicheId", "status"]),
+    .index("by_niche_status", ["nicheId", "status"])
+    .index("by_niche_country_status", ["nicheId", "country", "status"]),
 
   // ─── Meta Ad Library (Argentina MVP) ──────────────────────────────
 
@@ -497,7 +509,10 @@ export default defineSchema({
     .index("by_country_lastSeen", ["country", "lastSeenAt"])
     .index("by_page", ["pageId"])
     .index("by_destination", ["destinationUrl"])
-    .index("by_active_country", ["isActive", "country"]),
+    .index("by_active_country", ["isActive", "country"])
+    // Cross-country candidate pools (e.g. investigate.ts similar-ads) — no
+    // longer AR-only, so a plain isActive index without the country partition.
+    .index("by_active", ["isActive"]),
 
   // ─── OAuth token cache (Mercado Libre) ────────────────────────────
   // Singleton row. Mercado Libre refresh tokens are single-use — each
