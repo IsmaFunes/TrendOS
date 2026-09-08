@@ -383,6 +383,17 @@ async function scrapeTerm(page, term, limit, debug) {
   console.log(
     `  → ${ads.length} ads for "${term}" (graphql responses: ${graphqlHits})`,
   );
+  // Meta responded substantially but nothing was extractable — genuinely
+  // sparse results don't usually generate this much graphql traffic for
+  // nothing. Confirmed on 2026-09-07: a CI-run scraper hit this pattern
+  // across most terms while the identical terms run locally returned real
+  // ads, consistent with the runner's IP/environment getting a degraded
+  // response Meta doesn't serve to a normal browser session.
+  if (ads.length === 0 && graphqlHits >= 10) {
+    console.warn(
+      `  ⚠ "${term}": ${graphqlHits} graphql responses yielded 0 ads — possible degraded/blocked response, not necessarily "no results". Re-run with META_ADS_DEBUG=1 to inspect.`,
+    );
+  }
   return ads;
 }
 
@@ -436,6 +447,13 @@ async function launchBrowser() {
 async function scrapeTerms(page, terms, limit, debug) {
   const byId = new Map();
   const perTermCap = Math.max(6, Math.ceil(limit / terms.length) + 2);
+  // Track which terms actually returned something in pass 1 — a term that
+  // came back with 0 after a full scroll (scrapeTerm always runs its full
+  // iteration budget when nothing is found) is very unlikely to produce
+  // something different a few minutes later. Blindly re-visiting EVERY term
+  // in the fill pass — most niches have far more dead terms than productive
+  // ones — was silently doubling the scrape's wall-clock time for no gain.
+  const productiveTerms = new Set();
 
   for (const term of terms) {
     if (byId.size >= limit) break;
@@ -443,6 +461,7 @@ async function scrapeTerms(page, terms, limit, debug) {
     const termLimit = Math.min(perTermCap, remaining);
     try {
       const batch = await scrapeTerm(page, term, termLimit, debug);
+      if (batch.length > 0) productiveTerms.add(term);
       for (const ad of batch) {
         if (!byId.has(ad.externalAdId)) byId.set(ad.externalAdId, ad);
       }
@@ -454,6 +473,7 @@ async function scrapeTerms(page, terms, limit, debug) {
   if (byId.size < limit) {
     for (const term of terms) {
       if (byId.size >= limit) break;
+      if (!productiveTerms.has(term)) continue; // confirmed dead in pass 1
       const remaining = limit - byId.size;
       try {
         const batch = await scrapeTerm(page, term, remaining, debug);

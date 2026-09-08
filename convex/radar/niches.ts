@@ -93,6 +93,14 @@ async function createScrapeJob(
       description,
     },
   );
+  // Best-effort: ping GitHub Actions to run the scrape worker now instead
+  // of waiting for its 15-min poll — see githubDispatch.ts. No-ops silently
+  // if GITHUB_ACTIONS_TOKEN isn't configured; the poll still covers it.
+  await ctx.scheduler.runAfter(
+    0,
+    internal.radar.githubDispatch.dispatchScrapeWorkflow,
+    {},
+  );
   return jobId;
 }
 

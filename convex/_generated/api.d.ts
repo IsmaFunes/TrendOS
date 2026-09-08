@@ -23,6 +23,7 @@ import type * as radar_discovery from "../radar/discovery.js";
 import type * as radar_features from "../radar/features.js";
 import type * as radar_geminiAds from "../radar/geminiAds.js";
 import type * as radar_geminiAdsCore from "../radar/geminiAdsCore.js";
+import type * as radar_githubDispatch from "../radar/githubDispatch.js";
 import type * as radar_http from "../radar/http.js";
 import type * as radar_imports from "../radar/imports.js";
 import type * as radar_investigate from "../radar/investigate.js";
@@ -77,6 +78,7 @@ declare const fullApi: ApiFromModules<{
   "radar/features": typeof radar_features;
   "radar/geminiAds": typeof radar_geminiAds;
   "radar/geminiAdsCore": typeof radar_geminiAdsCore;
+  "radar/githubDispatch": typeof radar_githubDispatch;
   "radar/http": typeof radar_http;
   "radar/imports": typeof radar_imports;
   "radar/investigate": typeof radar_investigate;

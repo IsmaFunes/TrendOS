@@ -14,11 +14,39 @@ name: Scrape Meta Ads Preview
 #   CONVEX_URL             - the target deployment's URL (currently dev:
 #                            https://proficient-salmon-481.convex.cloud)
 
+# Two triggers, belt-and-suspenders:
+#  - workflow_dispatch is called directly from Convex the moment ANY scrape
+#    job is created (convex/radar/niches.ts createScrapeJob -> see
+#    convex/radar/githubDispatch.ts) — a brand-new niche gets scraped within
+#    seconds of being created, not whenever the schedule next fires.
+#  - the 15-min schedule is the fallback: covers GITHUB_ACTIONS_TOKEN not
+#    being configured yet, a dispatch call failing, or anything the daily
+#    Convex refresh cron (refreshAllReadyNiches) queued without a live user
+#    waiting on it. Either way this workflow just claims whatever's pending
+#    and exits fast (no Meta traffic at all) when the queue is empty.
+# Free to run this often — this repo is public, so Actions minutes are
+# unlimited; only real cost is npm/Playwright setup time, cut via caching.
 on:
   schedule:
-    # 06:00 UTC daily (~03:00 Argentina time). GitHub Actions cron is UTC.
-    - cron: "0 6 * * *"
-  workflow_dispatch: {}
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      debug:
+        description: >-
+          Save each term's Meta Ad Library page HTML as a downloadable
+          artifact — for diagnosing why a scrape returns far fewer ads than
+          a local run of the same terms (suspected CI-environment issue,
+          not enabled by default since it adds real artifact storage).
+        type: boolean
+        default: false
+
+# A run processing several niches (~1-3 min each) could still be going when
+# the next 15-min tick fires. Queue behind the current run instead of racing
+# it — two overlapping scrapes would mean two concurrent Chromium sessions
+# hitting Meta at once, which is exactly the kind of thing worth avoiding.
+concurrency:
+  group: scrape-meta-ads
+  cancel-in-progress: false
 
 jobs:
   scrape:
@@ -27,6 +55,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
@@ -36,14 +66,38 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        id: playwright-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
       - name: Install Playwright Chromium
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
         run: npx playwright install --with-deps chromium
+
+      - name: Install Playwright OS dependencies only
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
 
       - name: Run Meta Ad Library scrape worker
         env:
           META_ADS_INGEST_SECRET: ${{ secrets.META_ADS_INGEST_SECRET }}
           CONVEX_URL: ${{ secrets.CONVEX_URL }}
-        # --max-jobs is raised from the script's default of 3: the daily
-        # refresh cron (convex/crons.ts refreshAllReadyNiches) can queue
-        # every ready niche at once, not just a handful.
-        run: npm run scrape:meta-ads -- --max-jobs 20
+          META_ADS_DEBUG: ${{ inputs.debug && '1' || '' }}
+        # Kept modest on purpose: with runs every 15 min, a big backlog
+        # (e.g. right after the daily refresh cron queues every ready
+        # niche at once) drains gradually across successive runs instead
+        # of one run ballooning past the 15-min cadence and queueing up
+        # concurrency waits.
+        run: npm run scrape:meta-ads -- --max-jobs 5
+
+      - name: Upload scrape debug HTML (manual debug runs only)
+        if: always() && inputs.debug
+        uses: actions/upload-artifact@v4
+        with:
+          name: scrape-debug-html
+          path: scripts/meta-ad-scraper/debug/
+          retention-days: 7
+          if-no-files-found: ignore
