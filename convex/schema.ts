@@ -384,29 +384,10 @@ export default defineSchema({
     .index("by_status", ["status"])
     .index("by_country_updated", ["country", "updatedAt"]),
 
-  /** Per-user Gemini ranking of niche ads (cached). */
-  radarAdRankings: defineTable({
-    userId: v.id("users"),
-    nicheId: v.id("radarNiches"),
-    profileFingerprint: v.string(),
-    ranked: v.array(
-      v.object({
-        adId: v.id("radarAds"),
-        score: v.number(),
-        reason: v.optional(v.string()),
-      }),
-    ),
-    droppedAdIds: v.array(v.id("radarAds")),
-    model: v.optional(v.string()),
-    createdAt: v.number(),
-    expiresAt: v.number(),
-  }).index("by_user_niche", ["userId", "nicheId"]),
-
   /**
-   * Niche-shared Gemini relevance pass — computed once per niche bucket
-   * (not per user like radarAdRankings above) and is now the MANDATORY
-   * gate before any ad reaches a user's feed: an ad not present here with
-   * score >= 45 is never shown, regardless of sort mode.
+   * Niche-shared Gemini relevance pass — computed once per niche bucket and
+   * is the MANDATORY gate before any ad reaches a user's feed: an ad not
+   * present here with score >= 45 is never shown, regardless of sort mode.
    */
   radarNicheAdRelevance: defineTable({
     nicheId: v.id("radarNiches"),
@@ -423,44 +404,6 @@ export default defineSchema({
     createdAt: v.number(),
     expiresAt: v.number(),
   }).index("by_niche", ["nicheId"]),
-
-  /**
-   * Automatic Mercado Libre product match for a niche's top-ranked ads —
-   * computed once per (niche, ad) and shared across every store in that
-   * niche, unlike the per-(ad,user) radarAdInvestigations cache below which
-   * backs the manual "Investigar" deep-dive (suppliers, margin, similar ads).
-   */
-  radarNicheAdProductMatches: defineTable({
-    nicheId: v.id("radarNiches"),
-    adId: v.id("radarAds"),
-    status: v.union(
-      v.literal("matched"),
-      v.literal("no_match"),
-      v.literal("not_a_product"),
-      v.literal("error"),
-    ),
-    productName: v.optional(v.string()),
-    bestMatch: v.optional(mlMatchResultValidator),
-    allMatches: v.array(mlMatchResultValidator),
-    /**
-     * Only meaningful for a gemini_research-sourced bestMatch (web-search
-     * grounded, not a structured/verifiable API result) — flags whether a
-     * SerpAPI Google Shopping candidate independently corroborates it, since
-     * full content-fetch verification of mercadolibre.com.ar is unreliable
-     * (bot-gated, rejects real listings as often as fake ones).
-     */
-    verificationStatus: v.optional(
-      v.union(
-        v.literal("cross_source_corroborated"),
-        v.literal("unverified_single_source"),
-      ),
-    ),
-    errorMessage: v.optional(v.string()),
-    createdAt: v.number(),
-    expiresAt: v.number(),
-  })
-    .index("by_niche", ["nicheId"])
-    .index("by_niche_ad", ["nicheId", "adId"]),
 
   radarNicheAds: defineTable({
     nicheId: v.id("radarNiches"),

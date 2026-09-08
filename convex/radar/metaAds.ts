@@ -19,13 +19,10 @@ import {
   passesNicheAdGate,
 } from "./adRelevance";
 import { MIN_ADS_READY } from "./niches";
-import { mlMatchResultValidator } from "./validators";
 import { scoreStoreQuality } from "./investigate";
 
 /** Ads below this Gemini relevance score are never shown, any sort mode. */
 const MIN_RELEVANCE_SCORE = 45;
-/** Default feed size: exactly this many ads per niche, not a suggestion. */
-const FEED_SIZE = 10;
 
 const AR = "AR";
 
@@ -65,14 +62,6 @@ const adReturnValidator = v.object({
   storeQualityScore: v.optional(v.number()),
   storeQualityLabel: v.optional(v.string()),
   advertiserActiveAdCount: v.optional(v.number()),
-  /** Automatic niche-level Mercado Libre match, when this ad was in the niche's top-ranked set. */
-  mlMatch: v.optional(mlMatchResultValidator),
-  mlMatchVerification: v.optional(
-    v.union(
-      v.literal("cross_source_corroborated"),
-      v.literal("unverified_single_source"),
-    ),
-  ),
 });
 
 const scrapedAdValidator = v.object({
@@ -479,24 +468,13 @@ export const listAdsForUser = query({
     const search = args.search
       ? normalizeForSubstringMatch(args.search.trim())
       : undefined;
-    // The curated default feed is exactly FEED_SIZE ads, ranked by quality
-    // — searching is a deliberate "show me more/other things" action, so
-    // it keeps the old flexible limit instead of the fixed count.
-    const limit = search ? Math.min(args.limit ?? 48, 100) : FEED_SIZE;
+    // A real browsing experience over the relevant pool, ranked by quality
+    // — not a forced top-10 shortlist.
+    const limit = Math.min(args.limit ?? 48, 100);
     const sort = args.sort ?? "quality";
 
     const niche = await ctx.db.get(profile.nicheId!);
     const gateKeywords = nicheKeywordsForGate(niche, profile.nicheKeywords);
-
-    // Small, bounded set (top ~12 ranked ads per niche get auto-matched —
-    // see convex/radar/nicheMatching.ts) — safe to load in full and index.
-    const productMatches = await ctx.db
-      .query("radarNicheAdProductMatches")
-      .withIndex("by_niche", (q) => q.eq("nicheId", profile.nicheId!))
-      .take(50);
-    const matchByAdId = new Map(
-      productMatches.map((m) => [String(m.adId), m]),
-    );
 
     const ads = [];
     for (const link of links) {
@@ -524,7 +502,6 @@ export const listAdsForUser = query({
       );
       if (excluded.some((ex) => hay.includes(ex))) continue;
       if (search && !hay.includes(search)) continue;
-      const productMatch = matchByAdId.get(String(ad._id));
       const adActiveDays = activeDays(ad.startedAt, ad.lastSeenAt);
       const advertiser = await ctx.db
         .query("radarAdvertisers")
@@ -546,8 +523,6 @@ export const listAdsForUser = query({
         storeQualityScore: quality.score,
         storeQualityLabel: quality.label,
         advertiserActiveAdCount: advertiser?.activeAdCount,
-        mlMatch: productMatch?.bestMatch,
-        mlMatchVerification: productMatch?.verificationStatus,
       });
     }
 
@@ -652,18 +627,6 @@ export const getAd = query({
     const ad = await ctx.db.get(args.adId);
     if (!ad || ad.country !== AR) return null;
 
-    const profile = await ctx.db
-      .query("businessProfiles")
-      .withIndex("by_user", (q) => q.eq("userId", user._id))
-      .unique();
-    const productMatch = profile?.nicheId
-      ? await ctx.db
-          .query("radarNicheAdProductMatches")
-          .withIndex("by_niche_ad", (q) =>
-            q.eq("nicheId", profile.nicheId!).eq("adId", ad._id),
-          )
-          .unique()
-      : null;
     const adActiveDays = activeDays(ad.startedAt, ad.lastSeenAt);
     const advertiser = await ctx.db
       .query("radarAdvertisers")
@@ -684,8 +647,6 @@ export const getAd = query({
       storeQualityScore: quality.score,
       storeQualityLabel: quality.label,
       advertiserActiveAdCount: advertiser?.activeAdCount,
-      mlMatch: productMatch?.bestMatch,
-      mlMatchVerification: productMatch?.verificationStatus,
     };
   },
 });

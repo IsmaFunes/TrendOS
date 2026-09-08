@@ -5,17 +5,15 @@
  */
 
 import { v } from "convex/values";
-import { action, internalAction } from "../_generated/server";
-import { api, internal } from "../_generated/api";
+import { internalAction } from "../_generated/server";
+import { internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { fetchJsonWithRetry, structuredLog } from "./http";
 import {
   buildNicheRelevancePrompt,
-  buildRankingPrompt,
   buildScrapeTermsPrompt,
   extractJsonPayload,
   GEMINI_ADS_MODEL,
-  MIN_FORCE_REFRESH_INTERVAL_MS,
   normalizeScrapeTerms,
   parseRankingResponse,
   RANKING_RESPONSE_SCHEMA,
@@ -135,20 +133,6 @@ type EnrichResult = {
   skipped?: string;
 };
 
-type RankingResult = {
-  status:
-    | "fresh"
-    | "updated"
-    | "no_user"
-    | "no_niche"
-    | "no_ads"
-    | "no_gemini_key"
-    | "error";
-  ranked: number;
-  dropped: number;
-  message?: string;
-};
-
 type NicheEnrichRow = {
   nicheId: Id<"radarNiches">;
   keywords: string[];
@@ -179,30 +163,6 @@ type NicheRelevanceResult = {
   ranked: number;
   dropped: number;
   message?: string;
-};
-
-type RankingContext = {
-  nicheId: Id<"radarNiches">;
-  fingerprint: string;
-  profile: {
-    businessName: string;
-    description?: string;
-    nicheKeywords?: string[];
-    excludedKeywords?: string[];
-    goal?: string;
-    notes?: string;
-    channels?: string[];
-  };
-  ads: Array<{
-    id: string;
-    pageName: string;
-    body: string;
-    activeDays: number;
-    searchTerm?: string;
-    destinationUrl?: string;
-  }>;
-  existingFresh: boolean;
-  existingCreatedAt?: number;
 };
 
 /** Expand Meta Ad Library search terms for a niche (fail-soft without key). */
@@ -287,133 +247,11 @@ export const enrichNicheScrapeTerms = internalAction({
   },
 });
 
-/** Rank/filter niche ads for the signed-in user. Cached ~12h. */
-export const refreshMyAdRanking = action({
-  args: { force: v.optional(v.boolean()) },
-  returns: v.object({
-    status: v.union(
-      v.literal("fresh"),
-      v.literal("updated"),
-      v.literal("no_user"),
-      v.literal("no_niche"),
-      v.literal("no_ads"),
-      v.literal("no_gemini_key"),
-      v.literal("error"),
-    ),
-    ranked: v.number(),
-    dropped: v.number(),
-    message: v.optional(v.string()),
-  }),
-  handler: async (ctx, args): Promise<RankingResult> => {
-    const me = await ctx.runQuery(api.users.me, {});
-    if (!me) {
-      return { status: "no_user", ranked: 0, dropped: 0 };
-    }
-    if (!process.env.GEMINI_API_KEY?.trim()) {
-      return { status: "no_gemini_key", ranked: 0, dropped: 0 };
-    }
-
-    const now = Date.now();
-    const context: RankingContext | null = await ctx.runQuery(
-      internal.radar.adRanking.loadRankingContext,
-      { userId: me._id, now },
-    );
-    if (!context) {
-      return { status: "no_niche", ranked: 0, dropped: 0 };
-    }
-    if (context.existingFresh && !args.force) {
-      return {
-        status: "fresh",
-        ranked: context.ads.length,
-        dropped: 0,
-      };
-    }
-    // `force` bypasses the TTL/fingerprint cache above, but this is a public
-    // action any signed-in client can call directly — without a floor here,
-    // a caller could pass force:true in a loop and run up the Gemini bill.
-    if (
-      args.force &&
-      context.existingCreatedAt &&
-      now - context.existingCreatedAt < MIN_FORCE_REFRESH_INTERVAL_MS
-    ) {
-      return {
-        status: "fresh",
-        ranked: context.ads.length,
-        dropped: 0,
-        message: "cooldown",
-      };
-    }
-    if (context.ads.length === 0) {
-      return { status: "no_ads", ranked: 0, dropped: 0 };
-    }
-
-    try {
-      const text = await callGeminiJson(
-        buildRankingPrompt({
-          profile: context.profile,
-          ads: context.ads,
-        }),
-        {
-          label: "ranking",
-          responseSchema: RANKING_RESPONSE_SCHEMA,
-          maxOutputTokens: 8192,
-          // A thinking model judging up to MAX_ADS_TO_RANK ads with an
-          // 8192-token budget routinely needs more than the 20s default —
-          // that mismatch was silently failing ranking (and therefore
-          // blocking the whole feed, since it's now a mandatory gate) for
-          // niches with a full ad pool. Fewer attempts at a longer timeout:
-          // a slow response isn't transient network noise that benefits
-          // from 4 retries, it's the model actually taking a while.
-          timeoutMs: 45_000,
-          maxAttempts: 2,
-        },
-      );
-      const payload = extractJsonPayload(text);
-      const validIds = new Set(context.ads.map((a) => a.id));
-      const parsed = parseRankingResponse(payload, validIds);
-
-      const ranked = parsed.ranked.map((r) => ({
-        adId: r.adId as Id<"radarAds">,
-        score: r.score,
-        reason: r.reason,
-      }));
-      const droppedAdIds = parsed.droppedAdIds.map(
-        (id) => id as Id<"radarAds">,
-      );
-
-      await ctx.runMutation(internal.radar.adRanking.saveRanking, {
-        userId: me._id,
-        nicheId: context.nicheId,
-        profileFingerprint: context.fingerprint,
-        ranked,
-        droppedAdIds,
-        model: GEMINI_ADS_MODEL,
-      });
-
-      return {
-        status: "updated",
-        ranked: ranked.length,
-        dropped: droppedAdIds.length,
-      };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "gemini_error";
-      console.warn("refreshMyAdRanking failed:", message);
-      return {
-        status: "error",
-        ranked: 0,
-        dropped: 0,
-        message,
-      };
-    }
-  },
-});
-
 /**
  * Niche-shared relevance pass — the mandatory gate `listAdsForUser` now
- * requires before showing any ad, computed once per niche bucket instead of
- * once per (user, niche). Triggered internally (post-ingest, cron sweep,
- * migration backfill) — never called directly by a client, so no cooldown
- * guard is needed the way the public, per-user `refreshMyAdRanking` needs one.
+ * requires before showing any ad, computed once per niche bucket. Triggered
+ * internally (post-ingest, cron sweep, migration backfill) — never called
+ * directly by a client, so no per-caller cooldown guard is needed.
  */
 export const refreshNicheAdRelevance = internalAction({
   args: { nicheId: v.id("radarNiches"), force: v.optional(v.boolean()) },
@@ -493,16 +331,11 @@ export const refreshNicheAdRelevance = internalAction({
         model: GEMINI_ADS_MODEL,
       });
 
-      // Relevance changed — (re)match the niche's top-ranked ads to
-      // Mercado Libre so the feed can show ML price/match inline without
-      // waiting for a user to click "Investigar" on each one.
-      if (ranked.length > 0) {
-        await ctx.scheduler.runAfter(
-          0,
-          internal.radar.nicheMatching.runNicheProductMatching,
-          { nicheId: args.nicheId },
-        );
-      }
+      // ML matching runs on-demand only, when a user clicks "Investigar" on
+      // a specific ad (convex/radar/investigate.ts investigateAd) — never
+      // automatically here. Browsing the feed stays cheap and fast;
+      // per-product ML/supplier research is a deliberate action, not
+      // implicit background work.
 
       return {
         status: "updated",

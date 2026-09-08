@@ -12,9 +12,7 @@ import type { Id } from "../_generated/dataModel";
 const BATCH = 256;
 
 type SchemaTable =
-  | "radarAdRankings"
   | "radarNicheAdRelevance"
-  | "radarNicheAdProductMatches"
   | "radarNicheAds"
   | "radarNicheScrapeJobs"
   | "radarNiches"
@@ -44,9 +42,7 @@ type SchemaTable =
   | "users";
 
 const SCHEMA_TABLES: SchemaTable[] = [
-  "radarAdRankings",
   "radarNicheAdRelevance",
-  "radarNicheAdProductMatches",
   "radarNicheAds",
   "radarNicheScrapeJobs",
   "radarNiches",

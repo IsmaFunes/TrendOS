@@ -4,25 +4,15 @@
 
 /** Same model family as geminiResearch (2.5-flash is 404 for new keys). */
 export const GEMINI_ADS_MODEL = "gemini-3.6-flash";
-export const AD_RANKING_TTL_MS = 12 * 60 * 60 * 1000;
 /**
- * Niche-shared relevance pass TTL. Longer than the old per-user TTL since
- * it's refreshed event-driven (new ads linked) rather than per user session,
- * and expiry here is only a fallback so a niche that never scrapes again
- * doesn't serve an indefinitely-stale pass.
+ * Niche-shared relevance pass TTL. Refreshed event-driven (new ads linked)
+ * rather than per user session; expiry here is only a fallback so a niche
+ * that never scrapes again doesn't serve an indefinitely-stale pass.
  */
 export const NICHE_AD_RELEVANCE_TTL_MS = 24 * 60 * 60 * 1000;
 export const MAX_ADS_TO_RANK = 60;
 /** Bump to invalidate cached rankings when gate/prompt rules change. */
 export const RANKING_RULES_VERSION = "v2-strict-niche";
-/**
- * Floor between forced re-ranks for one user+niche, regardless of `force`.
- * `refreshMyAdRanking` is a public action a client can call directly (not
- * only from the ads-page effect), so without this a caller could pass
- * `force: true` in a loop and burn Gemini quota — the fingerprint/TTL cache
- * only protects the non-forced path.
- */
-export const MIN_FORCE_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
 /** Gemini `responseSchema` (Schema proto — type names are uppercase). */
 export const SCRAPE_TERMS_RESPONSE_SCHEMA = {
@@ -59,35 +49,6 @@ export const RANKING_RESPONSE_SCHEMA = {
   },
   required: ["keep", "drop"],
 } as const;
-
-export type ProfileForAds = {
-  businessName: string;
-  description?: string;
-  nicheKeywords?: string[];
-  excludedKeywords?: string[];
-  goal?: string;
-  notes?: string;
-  channels?: string[];
-};
-
-export function profileFingerprint(profile: ProfileForAds): string {
-  const raw = JSON.stringify({
-    v: RANKING_RULES_VERSION,
-    n: profile.businessName.trim().toLowerCase(),
-    d: (profile.description ?? "").trim().toLowerCase(),
-    k: [...(profile.nicheKeywords ?? [])].map((x) => x.toLowerCase()).sort(),
-    e: [...(profile.excludedKeywords ?? [])].map((x) => x.toLowerCase()).sort(),
-    g: profile.goal ?? "",
-    c: [...(profile.channels ?? [])].map((x) => x.toLowerCase()).sort(),
-    notes: (profile.notes ?? "").trim().toLowerCase().slice(0, 200),
-  });
-  let h = 2166136261;
-  for (let i = 0; i < raw.length; i++) {
-    h ^= raw.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return `p${(h >>> 0).toString(16)}`;
-}
 
 /**
  * Fingerprint for the niche-shared relevance pass — deliberately keyed only
@@ -263,10 +224,9 @@ Respondé SOLO JSON:
 }
 
 /**
- * Niche-shared relevance pass — unlike buildRankingPrompt this has no single
- * store's profile/exclusions to work from (the result is shared across every
- * store in the niche), so it curates purely on topical fit to the niche
- * itself instead of one business's notes/exclusions.
+ * Niche-shared relevance pass — curates purely on topical fit to the niche
+ * itself, since the result is shared across every store in it rather than
+ * scoped to any one business's profile/exclusions.
  */
 export function buildNicheRelevancePrompt(input: {
   label: string;
@@ -304,55 +264,6 @@ DROP obligatorio si:
 - Placeholders {{product.*}} o creativo vacío
 
 KEEP solo si el producto/oferta encaja claramente con el nicho y sus keywords.
-score 0-100, reason corto en español.
-
-Respondé SOLO JSON:
-{"keep":[{"id":"...","score":0,"reason":"..."}],"drop":[{"id":"...","reason":"..."}]}`;
-}
-
-export function buildRankingPrompt(input: {
-  profile: ProfileForAds;
-  ads: Array<{
-    id: string;
-    pageName: string;
-    body: string;
-    activeDays: number;
-    searchTerm?: string;
-    destinationUrl?: string;
-  }>;
-}): string {
-  const adsJson = input.ads.map((a) => ({
-    id: a.id,
-    page: a.pageName,
-    body: a.body.slice(0, 280),
-    days: a.activeDays,
-    term: a.searchTerm ?? "",
-    dest: (a.destinationUrl ?? "").slice(0, 120),
-  }));
-  return `Sos un curador estricto de anuncios Meta para ecommerce en Argentina.
-Solo dejá anuncios del MISMO rubro de producto que la tienda. Ante la duda, DROPEÁ.
-
-Perfil de tienda:
-${JSON.stringify({
-  name: input.profile.businessName,
-  description: input.profile.description ?? "",
-  keywords: input.profile.nicheKeywords ?? [],
-  excluded: input.profile.excludedKeywords ?? [],
-  goal: input.profile.goal ?? "",
-  channels: input.profile.channels ?? [],
-  notes: (input.profile.notes ?? "").slice(0, 240),
-})}
-
-Anuncios candidatos:
-${JSON.stringify(adsJson)}
-
-DROP obligatorio si:
-- App / Play Store / App Store / series / drama / juegos
-- Copy principalmente en inglés, italiano u otro idioma (no español rioplatense)
-- Otro rubro (fitness, CNC, moda, fintech, etc.) aunque el searchTerm diga el nicho
-- Placeholders {{product.*}} o creativo vacío
-
-KEEP solo si el producto/oferta encaja claramente con keywords/descripción.
 score 0-100, reason corto en español.
 
 Respondé SOLO JSON:

@@ -30,18 +30,6 @@ const SORT_LABELS: Record<SortMode, string> = {
   active_days: "Más días activos",
 };
 
-function formatMlPrice(value: number | undefined, currency: string | undefined): string | null {
-  if (value == null || !Number.isFinite(value)) return null;
-  if (currency === "ARS" || !currency) {
-    return new Intl.NumberFormat("es-AR", {
-      style: "currency",
-      currency: "ARS",
-      maximumFractionDigits: 0,
-    }).format(value);
-  }
-  return `${currency} ${value.toLocaleString("es-AR")}`;
-}
-
 export default function AdsPage() {
   const router = useRouter();
   const { isAuthenticated, isLoading } = useConvexAuth();
@@ -144,7 +132,7 @@ export default function AdsPage() {
               ? `Basado en tu nicho: ${feedState.nicheLabel}`
               : "Personalizados para tu tienda"}
             {feedState?.status === "ready" && sort === "quality"
-              ? " · Los 10 mejores anuncios"
+              ? " · Ordenados por calidad"
               : ""}
           </p>
         </div>
@@ -246,28 +234,6 @@ export default function AdsPage() {
                     <p className="line-clamp-1 text-xs text-primary">
                       {ad.storeQualityLabel}
                     </p>
-                  )}
-                  {ad.mlMatch && (
-                    <div className="flex items-center gap-1.5">
-                      <Badge
-                        variant={
-                          ad.mlMatch.badge === "best_match"
-                            ? "default"
-                            : ad.mlMatch.badge === "match"
-                              ? "secondary"
-                              : "outline"
-                        }
-                        className="text-[10.5px]"
-                      >
-                        {formatMlPrice(ad.mlMatch.price, ad.mlMatch.currency) ??
-                          "Visto en ML"}
-                      </Badge>
-                      {ad.mlMatchVerification === "unverified_single_source" && (
-                        <span className="text-[10px] text-muted-foreground">
-                          confirmá el precio
-                        </span>
-                      )}
-                    </div>
                   )}
                   <span
                     className={cn(

@@ -7,7 +7,6 @@ import {
 import {
   normalizeScrapeTerms,
   parseRankingResponse,
-  profileFingerprint,
 } from "../geminiAdsCore";
 import {
   isAppOrInstallAd,
@@ -644,18 +643,6 @@ describe("backtest", () => {
 });
 
 describe("gemini ads personalization helpers", () => {
-  it("fingerprint changes when keywords change", () => {
-    const a = profileFingerprint({
-      businessName: "Mate Co",
-      nicheKeywords: ["mate", "termo"],
-    });
-    const b = profileFingerprint({
-      businessName: "Mate Co",
-      nicheKeywords: ["skincare"],
-    });
-    expect(a).not.toBe(b);
-  });
-
   it("normalizes scrape terms with fallback", () => {
     expect(
       normalizeScrapeTerms(["  Termo Stanley ", "x"], ["mate"]),

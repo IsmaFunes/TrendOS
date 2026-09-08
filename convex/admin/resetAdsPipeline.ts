@@ -16,9 +16,7 @@ import { internal } from "../_generated/api";
 const BATCH = 256;
 
 type AdsPipelineTable =
-  | "radarNicheAdProductMatches"
   | "radarNicheAdRelevance"
-  | "radarAdRankings"
   | "radarAdInvestigations"
   | "radarNicheAds"
   | "radarNicheScrapeJobs"
@@ -29,9 +27,7 @@ type AdsPipelineTable =
 
 const ADS_PIPELINE_TABLES: AdsPipelineTable[] = [
   // Delete dependents before the tables they reference.
-  "radarNicheAdProductMatches",
   "radarNicheAdRelevance",
-  "radarAdRankings",
   "radarAdInvestigations",
   "radarNicheAds",
   "radarNicheScrapeJobs",
