@@ -30,7 +30,19 @@ export default function AdDetailPage() {
       </Button>
 
       {ad === undefined && (
-        <p className="mt-6 text-muted-foreground">Cargando…</p>
+        <div className="grid gap-6 md:grid-cols-2">
+          <Card className="aspect-[4/5] w-full animate-pulse overflow-hidden bg-surface-2 p-0" />
+          <div className="flex flex-col gap-3">
+            <div className="h-7 w-2/3 animate-pulse rounded bg-surface-2" />
+            <div className="flex gap-1.5">
+              <div className="h-5 w-20 animate-pulse rounded-md bg-surface-2" />
+              <div className="h-5 w-24 animate-pulse rounded-md bg-surface-2" />
+            </div>
+            <div className="mt-3 h-4 w-full animate-pulse rounded bg-surface-2" />
+            <div className="h-4 w-full animate-pulse rounded bg-surface-2" />
+            <div className="h-4 w-1/2 animate-pulse rounded bg-surface-2" />
+          </div>
+        </div>
       )}
 
       {ad === null && (

@@ -36,7 +36,6 @@ type SchemaTable =
   | "radarSeasonalEvents"
   | "radarScoringConfig"
   | "radarProducts"
-  | "userCategories"
   | "businessProfiles"
   | "categories"
   | "users";
@@ -66,7 +65,6 @@ const SCHEMA_TABLES: SchemaTable[] = [
   "radarSeasonalEvents",
   "radarScoringConfig",
   "radarProducts",
-  "userCategories",
   "businessProfiles",
   "categories",
   "users",

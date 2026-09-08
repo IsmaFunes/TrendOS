@@ -30,6 +30,24 @@ const SORT_LABELS: Record<SortMode, string> = {
   active_days: "Más días activos",
 };
 
+function AdCardSkeleton() {
+  return (
+    <Card className="gap-0 overflow-hidden p-0">
+      <div className="aspect-[4/5] w-full animate-pulse bg-surface-2" />
+      <div className="flex flex-col gap-2 p-4">
+        <div className="h-3.5 w-2/3 animate-pulse rounded bg-surface-2" />
+        <div className="h-3 w-full animate-pulse rounded bg-surface-2" />
+        <div className="h-3 w-4/5 animate-pulse rounded bg-surface-2" />
+        <div className="mt-0.5 flex gap-1.5">
+          <div className="h-5 w-16 animate-pulse rounded-md bg-surface-2" />
+          <div className="h-5 w-14 animate-pulse rounded-md bg-surface-2" />
+        </div>
+        <div className="mt-2 h-8 w-full animate-pulse rounded-lg bg-surface-2" />
+      </div>
+    </Card>
+  );
+}
+
 export default function AdsPage() {
   const router = useRouter();
   const { isAuthenticated, isLoading } = useConvexAuth();
@@ -152,7 +170,11 @@ export default function AdsPage() {
       </div>
 
       {ads === undefined && (
-        <p className="text-muted-foreground">Buscando anuncios para vos…</p>
+        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          {Array.from({ length: 8 }).map((_, i) => (
+            <AdCardSkeleton key={i} />
+          ))}
+        </div>
       )}
 
       {emptyMessage && (
@@ -162,8 +184,8 @@ export default function AdsPage() {
             {feedState?.status === "pending_scrape" ||
             feedState?.status === "scraping" ||
             feedState?.status === "relevance_pending"
-              ? "En unos minutos vas a ver anuncios de tu categoría."
-              : "Podés ajustar tus keywords en Mi tienda."}
+              ? "En unos minutos vas a ver anuncios de tu nicho."
+              : "Podés cambiar de nicho en Mi tienda."}
           </p>
         </Card>
       )}

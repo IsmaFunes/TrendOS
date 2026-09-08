@@ -74,14 +74,6 @@ export default defineSchema({
     }),
   }).index("by_slug", ["slug"]),
 
-  userCategories: defineTable({
-    userId: v.id("users"),
-    categoryId: v.id("categories"),
-  })
-    .index("by_user", ["userId"])
-    .index("by_user_and_category", ["userId", "categoryId"])
-    .index("by_category", ["categoryId"]),
-
   // ─── Trend Radar module ───────────────────────────────────────────
 
   /** Normalized product (not a marketplace listing). */

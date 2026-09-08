@@ -23,19 +23,21 @@ function formatArs(value: number | undefined): string | null {
   }).format(value);
 }
 
+const NO_VALUE = "N/D";
+
 function formatMoney(
   value: number | undefined,
   currency: string | undefined,
 ): string {
-  if (value == null) return "—";
+  if (value == null) return NO_VALUE;
   if (currency === "ARS") return formatArs(value) ?? `$${value}`;
   return `${currency ?? ""} ${value.toLocaleString("es-AR")}`.trim();
 }
 
 const COUNTRY_LABEL: Record<string, string> = {
-  AR: "🇦🇷 Argentina",
-  CN: "🇨🇳 China",
-  BR: "🇧🇷 Brasil",
+  AR: "Argentina",
+  CN: "China",
+  BR: "Brasil",
 };
 
 type BadgeVariant = "default" | "secondary" | "destructive" | "outline";
@@ -107,7 +109,7 @@ export function InvestigatePanel({ adId }: InvestigatePanelProps) {
         <div className="mt-6 space-y-8">
           {isStale && (
             <p className="text-xs text-muted-foreground">
-              Este resultado tiene más de 7 días — probá &ldquo;Volver a investigar&rdquo; para actualizarlo.
+              Este resultado tiene más de 7 días. Probá &ldquo;Volver a investigar&rdquo; para actualizarlo.
             </p>
           )}
 
@@ -152,7 +154,7 @@ export function InvestigatePanel({ adId }: InvestigatePanelProps) {
                       <span>
                         {investigation.profit.estimatedSalePrice != null
                           ? formatArs(investigation.profit.estimatedSalePrice)
-                          : "—"}
+                          : NO_VALUE}
                       </span>
                     </div>
                     {investigation.profit.estimatedShippingCost != null && (
@@ -199,7 +201,7 @@ export function InvestigatePanel({ adId }: InvestigatePanelProps) {
                     <span className="font-display text-2xl text-accent-300">
                       {investigation.profit.estimatedMargin != null
                         ? `${(investigation.profit.estimatedMargin * 100).toFixed(0)}%`
-                        : "—"}
+                        : NO_VALUE}
                     </span>
                   </div>
                   <div className="mt-1 flex items-center justify-between text-sm">
@@ -209,7 +211,7 @@ export function InvestigatePanel({ adId }: InvestigatePanelProps) {
                     <span className="font-medium">
                       {investigation.profit.estimatedProfit != null
                         ? formatArs(investigation.profit.estimatedProfit)
-                        : "—"}
+                        : NO_VALUE}
                     </span>
                   </div>
                 </>
@@ -232,9 +234,9 @@ export function InvestigatePanel({ adId }: InvestigatePanelProps) {
 
           {investigation.warnings.length > 0 && (
             <Card className="p-3">
-              <ul className="space-y-1 text-xs text-muted-foreground">
+              <ul className="list-disc space-y-1 pl-4 text-xs text-muted-foreground">
                 {investigation.warnings.map((w, idx) => (
-                  <li key={idx}>· {w}</li>
+                  <li key={idx}>{w}</li>
                 ))}
               </ul>
             </Card>
@@ -311,7 +313,7 @@ export function InvestigatePanel({ adId }: InvestigatePanelProps) {
                         )}
                         {m.source === "gemini_research" && (
                           <p className="text-[11px] text-muted-foreground">
-                            Encontrado vía búsqueda web — confirmá el precio.
+                            Encontrado vía búsqueda web. Confirmá el precio.
                           </p>
                         )}
                         {m.permalink && (

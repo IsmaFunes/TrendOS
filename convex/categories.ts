@@ -75,35 +75,6 @@ export const list = query({
   },
 });
 
-export const listForUser = query({
-  args: {},
-  returns: v.array(categoryValidator),
-  handler: async (ctx) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) return [];
-
-    const user = await ctx.db
-      .query("users")
-      .withIndex("by_token", (q) =>
-        q.eq("tokenIdentifier", identity.tokenIdentifier),
-      )
-      .unique();
-    if (!user) return [];
-
-    const links = await ctx.db
-      .query("userCategories")
-      .withIndex("by_user", (q) => q.eq("userId", user._id))
-      .collect();
-
-    const categories = [];
-    for (const link of links) {
-      const cat = await ctx.db.get(link.categoryId);
-      if (cat) categories.push(cat);
-    }
-    return categories;
-  },
-});
-
 export const seed = mutation({
   args: {},
   returns: v.number(),

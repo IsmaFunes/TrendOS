@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 const inter = Inter({ subsets: ["latin"], variable: "--font-sans" });
 
 export const metadata: Metadata = {
-  title: "TrendOS — Anuncios que venden en Argentina",
+  title: "TrendOS: anuncios que venden en Argentina",
   description:
     "Encontrá productos que ya se están anunciando en Meta en Argentina.",
 };

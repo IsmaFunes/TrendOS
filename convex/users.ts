@@ -201,7 +201,6 @@ export const updateBusinessProfile = mutation({
     monthlyRevenueRange: v.optional(v.string()),
     targetMarginPercent: v.optional(v.number()),
     nicheIds: v.optional(v.array(v.id("radarNiches"))),
-    categoryIds: v.optional(v.array(v.id("categories"))),
     siteId: v.optional(v.string()),
     hasWarehouseStorage: v.optional(v.boolean()),
     storageNotes: v.optional(v.string()),
@@ -231,25 +230,6 @@ export const updateBusinessProfile = mutation({
 
     if (args.siteId) {
       await ctx.db.patch(user._id, { siteId: args.siteId });
-    }
-
-    // categoryIds is a separate self-tagging feature (used standalone on
-    // /tienda) unrelated to niche selection — omitted means leave existing
-    // links untouched.
-    if (args.categoryIds) {
-      const existingLinks = await ctx.db
-        .query("userCategories")
-        .withIndex("by_user", (q) => q.eq("userId", user._id))
-        .collect();
-      for (const link of existingLinks) {
-        await ctx.db.delete(link._id);
-      }
-      for (const categoryId of args.categoryIds) {
-        await ctx.db.insert("userCategories", {
-          userId: user._id,
-          categoryId,
-        });
-      }
     }
 
     const existingProfile = await ctx.db

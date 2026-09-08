@@ -312,8 +312,8 @@ export default function OnboardingPage() {
             <h3>Elegí tu nicho</h3>
             <p className="mt-1 text-sm text-muted-foreground">
               {maxNiches === 1
-                ? "Ya tenemos anuncios cargados para estos nichos — vas a ver resultados apenas termines."
-                : `Elegí hasta ${maxNiches} nichos — ya tenemos anuncios cargados para todos.`}
+                ? "Ya tenemos anuncios cargados para estos nichos: vas a ver resultados apenas termines."
+                : `Elegí hasta ${maxNiches} nichos. Ya tenemos anuncios cargados para todos.`}
             </p>
             <div className="mt-6">
               <NichePicker
@@ -330,7 +330,7 @@ export default function OnboardingPage() {
           <section className="flex flex-1 flex-col">
             <h3>¿Tenés lugar para guardar stock?</h3>
             <p className="mt-1 text-sm text-muted-foreground">
-              Opcional — nos ayuda a filtrar mejor.
+              Opcional, nos ayuda a filtrar mejor.
             </p>
             <div className="mt-6 flex max-w-[420px] flex-col gap-2.5">
               {(
