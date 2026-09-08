@@ -31,6 +31,14 @@ on:
     - cron: "*/15 * * * *"
   workflow_dispatch:
     inputs:
+      force_niche_id:
+        description: >-
+          Optional: a specific radarNiches document ID (from the Convex
+          dashboard) to force-scrape right now, even if it's already
+          "ready" — bypasses the normal queue instead of waiting for
+          this niche's turn. Leave empty for a normal queue-processing run.
+        type: string
+        default: ""
       debug:
         description: >-
           Save each term's Meta Ad Library page HTML as a downloadable
@@ -86,12 +94,20 @@ jobs:
           META_ADS_INGEST_SECRET: ${{ secrets.META_ADS_INGEST_SECRET }}
           CONVEX_URL: ${{ secrets.CONVEX_URL }}
           META_ADS_DEBUG: ${{ inputs.debug && '1' || '' }}
+          FORCE_NICHE_ID: ${{ inputs.force_niche_id }}
         # Kept modest on purpose: with runs every 15 min, a big backlog
         # (e.g. right after the daily refresh cron queues every ready
         # niche at once) drains gradually across successive runs instead
         # of one run ballooning past the 15-min cadence and queueing up
-        # concurrency waits.
-        run: npm run scrape:meta-ads -- --max-jobs 5
+        # concurrency waits. --force-niche ignores --max-jobs anyway (it
+        # only ever claims that one niche's job, then the queue looks
+        # empty to it and it stops).
+        run: |
+          if [ -n "$FORCE_NICHE_ID" ]; then
+            npm run scrape:meta-ads -- --force-niche "$FORCE_NICHE_ID" --max-jobs 5
+          else
+            npm run scrape:meta-ads -- --max-jobs 5
+          fi
 
       - name: Upload scrape debug HTML (manual debug runs only)
         if: always() && inputs.debug
