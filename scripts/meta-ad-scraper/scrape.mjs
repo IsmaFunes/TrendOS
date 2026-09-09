@@ -20,11 +20,17 @@
  * Optional: META_ADS_PROXY_SERVER, META_ADS_HEADED=1, META_ADS_DEBUG=1, --seed
  */
 
-import { chromium } from "playwright";
+import { chromium } from "playwright-extra";
+import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import { ConvexHttpClient } from "convex/browser";
 import { anyApi } from "convex/server";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+
+// Patches navigator.webdriver, chrome.runtime, permissions, plugins, WebGL
+// vendor, iframe.contentWindow, etc. — the standard evasions against
+// headless-Chromium fingerprinting, on top of Meta's own IP-based signals.
+chromium.use(StealthPlugin());
 
 const DEFAULT_COUNTRY = "AR";
 
@@ -32,9 +38,12 @@ const DEFAULT_COUNTRY = "AR";
  * Target ads per (niche, country) job. Niches are now a shared, continuously
  * refreshed pool rather than something re-earned per user scrape, so this
  * can afford to be generous — tune further once real multi-country run
- * timings are observed in production.
+ * timings are observed in production. Raised from 60 alongside
+ * MAX_ADS_TO_RANK (convex/radar/geminiAdsCore.ts) so a niche's pool can
+ * actually reach a browsable size in a handful of daily runs instead of
+ * trickling in 10-60 at a time.
  */
-const DEFAULT_NICHE_AD_TARGET = 60;
+const DEFAULT_NICHE_AD_TARGET = 120;
 
 /** Locale/Accept-Language per scraped country — see convex/radar/metaAds.ts SCRAPE_COUNTRIES. */
 const LOCALE_BY_COUNTRY = {
@@ -48,6 +57,50 @@ const LOCALE_BY_COUNTRY = {
 function localeFor(country) {
   return LOCALE_BY_COUNTRY[country] ?? LOCALE_BY_COUNTRY[DEFAULT_COUNTRY];
 }
+
+/**
+ * Rotated per browser context (see newPageForCountry) instead of one
+ * fixed UA/viewport for every request — a constant fingerprint across many
+ * back-to-back term searches is itself a signal, on top of whatever
+ * per-request headless detection the UA string alone triggers.
+ */
+const USER_AGENTS = [
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+];
+
+const VIEWPORTS = [
+  { width: 1366, height: 768 },
+  { width: 1440, height: 900 },
+  { width: 1536, height: 864 },
+  { width: 1920, height: 1080 },
+  { width: 1400, height: 960 },
+];
+
+function pickRandom(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+/** Random delay in [baseMs, baseMs + spreadMs) — avoids the fixed, robotically
+ * regular timing (same wait every single time) that a bot-detection system
+ * can key on directly. */
+function jitterMs(baseMs, spreadMs) {
+  return baseMs + Math.random() * spreadMs;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Pause between two term searches within the same job. */
+const TERM_GAP_BASE_MS = 1500;
+const TERM_GAP_SPREAD_MS = 2500;
+/** Pause between two (niche, country) jobs within the same run. */
+const JOB_GAP_BASE_MS = 4000;
+const JOB_GAP_SPREAD_MS = 6000;
 
 function parseArgs(argv) {
   const out = {
@@ -416,7 +469,7 @@ async function scrapeTerm(page, term, limit, country, debug) {
 
   page.on("response", onResponse);
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 90000 });
-  await page.waitForTimeout(5000);
+  await page.waitForTimeout(jitterMs(4000, 2000));
 
   for (const label of [
     "Allow all cookies",
@@ -438,8 +491,10 @@ async function scrapeTerm(page, term, limit, country, debug) {
   let lastCount = 0;
   let noGrowthStreak = 0;
   for (let i = 0; i < MAX_SCROLL_ITERATIONS; i++) {
-    await page.mouse.wheel(0, 3200);
-    await page.waitForTimeout(1500);
+    // Randomized scroll distance and pause — a fixed 3200px/1500ms every
+    // single scroll, forever, is itself a distinguishable machine pattern.
+    await page.mouse.wheel(0, 2600 + Math.random() * 1400);
+    await page.waitForTimeout(jitterMs(1100, 900));
     if (collected.length >= limit) break;
     if (collected.length === lastCount) {
       noGrowthStreak += 1;
@@ -449,7 +504,7 @@ async function scrapeTerm(page, term, limit, country, debug) {
       lastCount = collected.length;
     }
   }
-  await page.waitForTimeout(2500);
+  await page.waitForTimeout(jitterMs(2000, 1000));
   page.off("response", onResponse);
 
   if (debug) {
@@ -503,22 +558,40 @@ async function launchBrowser() {
   });
 }
 
-/** New context+page for a given country's locale — one per job. */
+/**
+ * New context+page for a given country's locale — one per term (see
+ * scrapeTermIsolated) rather than one per job, so a burst of searches
+ * doesn't all share one session's cookies/UA/viewport. StealthPlugin
+ * (registered on `chromium` above) handles the navigator.webdriver /
+ * chrome.runtime / plugins evasions per-context automatically.
+ */
 async function newPageForCountry(browser, country) {
   const { locale, acceptLanguage } = localeFor(country);
   const context = await browser.newContext({
     locale,
-    userAgent:
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    viewport: { width: 1400, height: 960 },
+    userAgent: pickRandom(USER_AGENTS),
+    viewport: pickRandom(VIEWPORTS),
     extraHTTPHeaders: {
       "Accept-Language": acceptLanguage,
     },
   });
-  await context.addInitScript(() => {
-    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
-  });
   return { context, page: await context.newPage() };
+}
+
+/**
+ * Runs one term in its own fresh browser context (own cookies, UA,
+ * viewport) instead of a context shared across every term in the job —
+ * one long-lived session firing off many distinct Ad Library queries
+ * back-to-back is itself a correlatable bot pattern, independent of any
+ * per-request fingerprinting.
+ */
+async function scrapeTermIsolated(browser, term, limit, country, debug) {
+  const { context, page } = await newPageForCountry(browser, country);
+  try {
+    return await scrapeTerm(page, term, limit, country, debug);
+  } finally {
+    await context.close();
+  }
 }
 
 /**
@@ -530,7 +603,7 @@ async function newPageForCountry(browser, country) {
  * spend any budget a dead term (0 results) left unused, so raising the cap
  * for diversity doesn't cost total volume.
  */
-async function scrapeTerms(page, terms, limit, country, debug) {
+async function scrapeTerms(browser, terms, limit, country, debug) {
   const byId = new Map();
   const perTermCap = Math.max(6, Math.ceil(limit / terms.length) + 2);
   // Track which terms actually returned something in pass 1 — a term that
@@ -546,13 +619,16 @@ async function scrapeTerms(page, terms, limit, country, debug) {
     const remaining = limit - byId.size;
     const termLimit = Math.min(perTermCap, remaining);
     try {
-      const batch = await scrapeTerm(page, term, termLimit, country, debug);
+      const batch = await scrapeTermIsolated(browser, term, termLimit, country, debug);
       if (batch.length > 0) productiveTerms.add(term);
       for (const ad of batch) {
         if (!byId.has(ad.externalAdId)) byId.set(ad.externalAdId, ad);
       }
     } catch (err) {
       console.warn(`Term "${term}" failed:`, err.message);
+    }
+    if (byId.size < limit) {
+      await sleep(jitterMs(TERM_GAP_BASE_MS, TERM_GAP_SPREAD_MS));
     }
   }
 
@@ -562,12 +638,15 @@ async function scrapeTerms(page, terms, limit, country, debug) {
       if (!productiveTerms.has(term)) continue; // confirmed dead in pass 1
       const remaining = limit - byId.size;
       try {
-        const batch = await scrapeTerm(page, term, remaining, country, debug);
+        const batch = await scrapeTermIsolated(browser, term, remaining, country, debug);
         for (const ad of batch) {
           if (!byId.has(ad.externalAdId)) byId.set(ad.externalAdId, ad);
         }
       } catch (err) {
         console.warn(`Term "${term}" (fill pass) failed:`, err.message);
+      }
+      if (byId.size < limit) {
+        await sleep(jitterMs(TERM_GAP_BASE_MS, TERM_GAP_SPREAD_MS));
       }
     }
   }
@@ -585,10 +664,6 @@ async function forceEnqueue(nicheId, country) {
     `Force-enqueued ${result.enqueued} job(s) for ${result.nicheIds.length} niche(s).`,
   );
   return result;
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -648,9 +723,8 @@ async function runQueue(args, debug) {
       console.log(
         `Job ${job.jobId} niche=${job.label} country=${job.country} terms=${job.terms.join(", ")}`,
       );
-      const { context, page } = await newPageForCountry(browser, job.country);
       try {
-        const ads = await scrapeTerms(page, job.terms, args.limit, job.country, debug);
+        const ads = await scrapeTerms(browser, job.terms, args.limit, job.country, debug);
         if (ads.length === 0) {
           await client.mutation(anyApi.radar.niches.completeScrapeJob, {
             secret,
@@ -676,8 +750,11 @@ async function runQueue(args, debug) {
           error: err.message,
         });
         console.warn(`  job failed: ${err.message}`);
-      } finally {
-        await context.close();
+      }
+      // Pace successive (niche, country) jobs within the same run instead
+      // of hammering Meta back-to-back from the same runner IP.
+      if (i < args.maxJobs - 1) {
+        await sleep(jitterMs(JOB_GAP_BASE_MS, JOB_GAP_SPREAD_MS));
       }
     }
   } finally {
@@ -710,19 +787,14 @@ async function main() {
 
   const browser = await launchBrowser();
   try {
-    const { context, page } = await newPageForCountry(browser, args.country);
-    try {
-      const unique = await scrapeTerms(page, args.terms, args.limit, args.country, debug);
-      console.log(`Total unique ads: ${unique.length}`);
-      if (unique.length === 0) {
-        console.warn("No ads scraped. Try META_ADS_HEADED=1 or a residential proxy.");
-        process.exitCode = 2;
-        return;
-      }
-      await ingest(unique, args.nicheId, args.country);
-    } finally {
-      await context.close();
+    const unique = await scrapeTerms(browser, args.terms, args.limit, args.country, debug);
+    console.log(`Total unique ads: ${unique.length}`);
+    if (unique.length === 0) {
+      console.warn("No ads scraped. Try META_ADS_HEADED=1 or a residential proxy.");
+      process.exitCode = 2;
+      return;
     }
+    await ingest(unique, args.nicheId, args.country);
   } finally {
     await browser.close();
   }

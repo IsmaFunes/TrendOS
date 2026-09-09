@@ -100,9 +100,14 @@ export const loadNicheRelevanceContext = internalQuery({
         existing.expiresAt > args.now,
     );
 
+    // Newest-linked first: as the niche's pool grows past MAX_ADS_TO_RANK
+    // via the daily scrape cron, freshly-linked ads should compete for the
+    // ranking pass instead of it permanently re-judging the same oldest
+    // slice forever.
     const links = await ctx.db
       .query("radarNicheAds")
       .withIndex("by_niche", (q) => q.eq("nicheId", args.nicheId))
+      .order("desc")
       .take(400);
 
     const ads = [];

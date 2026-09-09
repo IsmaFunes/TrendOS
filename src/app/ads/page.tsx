@@ -67,9 +67,11 @@ export default function AdsPage() {
   // (see convex/radar/geminiAds.ts refreshNicheAdRelevance). A niche's
   // profile.nicheIds is validated/required at onboarding, so there's no
   // "ensure a niche exists" step to wait on before querying the feed.
+  // No `limit` — the backend applies its own per-plan, per-niche cap
+  // (ADS_PER_NICHE_LIMIT in convex/radar/metaAds.ts) by default.
   const ads = useQuery(
     api.radar.metaAds.listAdsForUser,
-    canQueryFeed ? { search: search || undefined, sort, limit: 48 } : "skip",
+    canQueryFeed ? { search: search || undefined, sort } : "skip",
   );
 
   const emptyMessage = useMemo(() => {

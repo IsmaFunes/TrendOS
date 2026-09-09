@@ -10,7 +10,15 @@ export const GEMINI_ADS_MODEL = "gemini-3.6-flash";
  * that never scrapes again doesn't serve an indefinitely-stale pass.
  */
 export const NICHE_AD_RELEVANCE_TTL_MS = 24 * 60 * 60 * 1000;
-export const MAX_ADS_TO_RANK = 60;
+/**
+ * Raised from 60 — a niche's shared ad pool keeps growing via the daily
+ * scrape cron (convex/radar/niches.ts enqueueDailyScrapeJobs) and the
+ * per-plan display cap (metaAds.ts ADS_PER_NICHE_LIMIT, up to 100) needs
+ * comfortable headroom above it after MIN_RELEVANCE_SCORE drops some
+ * fraction of candidates, for browsing to feel like a real catalog rather
+ * than a fixed top-60 shortlist.
+ */
+export const MAX_ADS_TO_RANK = 200;
 /** Bump to invalidate cached rankings when gate/prompt rules change. */
 export const RANKING_RULES_VERSION = "v2-strict-niche";
 

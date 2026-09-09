@@ -140,6 +140,36 @@ function sanitizeBody(body: string | undefined): string | undefined {
   return t;
 }
 
+/**
+ * Ads actually rendered per followed niche — separate from MAX_ADS_TO_RANK
+ * (how many ads get judged for relevance, in geminiAdsCore.ts) and the
+ * .take(400) link scan in listAdsForUser (how many candidates search/sort
+ * get to consider). Those stay large so there's a real pool underneath —
+ * this is just the display slice, and it's what differs by plan.
+ */
+const ADS_PER_NICHE_LIMIT: Record<"free" | "pro", number> = {
+  free: 50,
+  pro: 100,
+};
+
+function compareAds<
+  T extends {
+    storeQualityScore?: number;
+    activeDays?: number;
+    lastSeenAt: number;
+  },
+>(sort: "quality" | "recent" | "active_days", a: T, b: T): number {
+  if (sort === "quality") {
+    const sa = a.storeQualityScore ?? 0;
+    const sb = b.storeQualityScore ?? 0;
+    if (sb !== sa) return sb - sa;
+  }
+  if (sort === "active_days") {
+    return (b.activeDays ?? 0) - (a.activeDays ?? 0);
+  }
+  return b.lastSeenAt - a.lastSeenAt;
+}
+
 function normalizeDomain(raw: string | undefined): string | null {
   if (!raw) return null;
   try {
@@ -484,10 +514,14 @@ export const listAdsForUser = query({
     const search = args.search
       ? normalizeForSubstringMatch(args.search.trim())
       : undefined;
-    // A real browsing experience over the relevant pool, ranked by quality
-    // — not a forced top-10 shortlist.
-    const limit = Math.min(args.limit ?? 48, 100);
     const sort = args.sort ?? "quality";
+    // A real browsing experience over the relevant pool, ranked by quality
+    // — not a forced top-10 shortlist. Capped per plan, per niche (see
+    // ADS_PER_NICHE_LIMIT); args.limit can only tighten that, never widen it.
+    const perNicheLimit = ADS_PER_NICHE_LIMIT[user.plan];
+    const overallLimit = args.limit
+      ? Math.min(args.limit, perNicheLimit * profile.nicheIds.length)
+      : perNicheLimit * profile.nicheIds.length;
 
     const ads = [];
     const seenAdIds = new Set<string>();
@@ -511,11 +545,16 @@ export const listAdsForUser = query({
         relevance.ranked.map((r) => [String(r.adId), r]),
       );
 
+      // Same newest-first scan order as loadNicheRelevanceContext
+      // (adRanking.ts) — otherwise a growing pool could rank fresh ads
+      // that this oldest-first scan then never reaches to display.
       const links = await ctx.db
         .query("radarNicheAds")
         .withIndex("by_niche", (q) => q.eq("nicheId", nicheId))
+        .order("desc")
         .take(400);
 
+      const nicheAds = [];
       for (const link of links) {
         const adKey = String(link.adId);
         if (seenAdIds.has(adKey)) continue;
@@ -558,7 +597,7 @@ export const listAdsForUser = query({
           pageLikeCount: advertiser?.pageLikeCount,
           pageIsDeleted: advertiser?.pageIsDeleted,
         });
-        ads.push({
+        nicheAds.push({
           ...ad,
           activeDays: adActiveDays,
           rankScore: ranked.score,
@@ -573,21 +612,16 @@ export const listAdsForUser = query({
           pageIsDeleted: advertiser?.pageIsDeleted,
         });
       }
+
+      // Cap AFTER collecting/searching this niche's full candidate pool
+      // (up to the 400 scanned above), not before — otherwise a search
+      // match ranked past the per-niche cap would never surface.
+      nicheAds.sort((a, b) => compareAds(sort, a, b));
+      ads.push(...nicheAds.slice(0, perNicheLimit));
     }
 
-    ads.sort((a, b) => {
-      if (sort === "quality") {
-        const sa = a.storeQualityScore ?? 0;
-        const sb = b.storeQualityScore ?? 0;
-        if (sb !== sa) return sb - sa;
-      }
-      if (sort === "active_days") {
-        return (b.activeDays ?? 0) - (a.activeDays ?? 0);
-      }
-      return b.lastSeenAt - a.lastSeenAt;
-    });
-
-    return ads.slice(0, limit);
+    ads.sort((a, b) => compareAds(sort, a, b));
+    return ads.slice(0, overallLimit);
   },
 });
 
