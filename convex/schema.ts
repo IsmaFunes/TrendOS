@@ -452,6 +452,13 @@ export default defineSchema({
     country: v.string(),
     activeAdCount: v.number(),
     totalAdCount: v.number(),
+    /** Facebook page follower count, straight from the Ad Library payload — a real credibility/size signal, not derived from our own scrape. */
+    pageLikeCount: v.optional(v.number()),
+    pageCategories: v.optional(v.array(v.string())),
+    pageProfileUri: v.optional(v.string()),
+    pageProfilePictureUrl: v.optional(v.string()),
+    /** True once Meta reports the page itself as deleted — the store may no longer exist even if we still have ads cached for it. */
+    pageIsDeleted: v.optional(v.boolean()),
     lastSeenAt: v.number(),
     createdAt: v.number(),
   })
@@ -492,6 +499,8 @@ export default defineSchema({
     storeId: v.optional(v.id("radarStores")),
     searchTerm: v.optional(v.string()),
     startedAt: v.optional(v.number()),
+    /** How many creative variants Meta reports collated under this ad — a live ad-spend/testing-scale signal for this specific product. */
+    collationCount: v.optional(v.number()),
     lastSeenAt: v.number(),
     isActive: v.boolean(),
     metadataJson: v.optional(v.string()),

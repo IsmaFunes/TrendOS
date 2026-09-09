@@ -20,7 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { cn } from "@/lib/utils";
+import { cn, formatCompactNumber } from "@/lib/utils";
 
 type SortMode = "quality" | "recent" | "active_days";
 
@@ -233,6 +233,16 @@ export default function AdsPage() {
                           {ad.advertiserActiveAdCount} anuncios activos
                         </Badge>
                       )}
+                    {ad.pageLikeCount != null && ad.pageLikeCount > 0 && (
+                      <Badge variant="outline" className="text-[10.5px]">
+                        {formatCompactNumber(ad.pageLikeCount)} me gusta
+                      </Badge>
+                    )}
+                    {ad.pageIsDeleted && (
+                      <Badge variant="destructive" className="text-[10.5px]">
+                        Página eliminada
+                      </Badge>
+                    )}
                   </div>
                   {ad.storeQualityLabel && (
                     <p className="line-clamp-1 text-xs text-primary">

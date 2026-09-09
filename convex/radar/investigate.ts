@@ -104,12 +104,21 @@ export function buildHeuristicProductSignal(
   return { productName, searchQuery };
 }
 
+/** Facebook page likes above this are treated as "as credible as it gets" for the log-scaled bonus. */
+const PAGE_LIKE_COUNT_CEILING = 50_000;
+/** A deleted Facebook page caps the score regardless of every other signal — the store itself may be gone. */
+const DELETED_PAGE_SCORE_CAP = 0.15;
+
 export function scoreStoreQuality(input: {
   hasStore: boolean;
   platform?: string;
   activeAdCount?: number;
   totalAdCount?: number;
   adActiveDays: number;
+  /** Facebook page follower count, straight from the Ad Library payload — real, not scrape-derived. */
+  pageLikeCount?: number;
+  /** True once Meta reports the page itself as deleted. */
+  pageIsDeleted?: boolean;
 }): { score: number; label: string } {
   let score = 0.3;
   if (input.hasStore) score += 0.15;
@@ -123,9 +132,20 @@ export function scoreStoreQuality(input: {
   score += Math.min(0.25, ((input.activeAdCount ?? 0) / 20) * 0.25);
   score += Math.min(0.15, ((input.totalAdCount ?? 0) / 100) * 0.15);
   score += Math.min(0.2, (input.adActiveDays / 60) * 0.2);
-  const clamped = clamp01(score);
-  const label =
-    clamped >= 0.7
+  if (input.pageLikeCount != null && input.pageLikeCount > 0) {
+    score +=
+      clamp01(
+        Math.log10(1 + input.pageLikeCount) /
+          Math.log10(1 + PAGE_LIKE_COUNT_CEILING),
+      ) * 0.2;
+  }
+  let clamped = clamp01(score);
+  if (input.pageIsDeleted) {
+    clamped = Math.min(clamped, DELETED_PAGE_SCORE_CAP);
+  }
+  const label = input.pageIsDeleted
+    ? "Página de Facebook eliminada"
+    : clamped >= 0.7
       ? "Tienda consolidada"
       : clamped >= 0.45
         ? "Tienda activa"
@@ -1052,6 +1072,8 @@ export const loadInvestigateContext = internalQuery({
       activeAdCount: advertiser?.activeAdCount,
       totalAdCount: advertiser?.totalAdCount,
       adActiveDays,
+      pageLikeCount: advertiser?.pageLikeCount,
+      pageIsDeleted: advertiser?.pageIsDeleted,
     });
 
     // Not AR-only anymore — ads are scraped across several countries, and a
@@ -1093,6 +1115,8 @@ export const loadInvestigateContext = internalQuery({
         activeAdCount: cAdvertiser?.activeAdCount,
         totalAdCount: cAdvertiser?.totalAdCount,
         adActiveDays: cActiveDays,
+        pageLikeCount: cAdvertiser?.pageLikeCount,
+        pageIsDeleted: cAdvertiser?.pageIsDeleted,
       });
       shortlisted.push({
         adId: c._id,

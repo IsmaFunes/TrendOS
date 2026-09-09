@@ -203,6 +203,23 @@ function collectBody(snap) {
   return cleanCopy(snap.link_description) ?? cleanCopy(snap.caption);
 }
 
+/** Meta reports this per-ad, straight from the page object — a real, free "how is this store doing" signal. */
+function collectPageLikeCount(snap, base) {
+  const raw = snap.page_like_count ?? base.page_like_count;
+  return typeof raw === "number" && Number.isFinite(raw) && raw >= 0
+    ? raw
+    : undefined;
+}
+
+function collectPageCategories(snap) {
+  if (!Array.isArray(snap.page_categories)) return undefined;
+  const categories = snap.page_categories
+    .filter((c) => typeof c === "string" && c.trim())
+    .map((c) => c.trim().slice(0, 60))
+    .slice(0, 5);
+  return categories.length ? categories : undefined;
+}
+
 function normalizeAd(node, term) {
   const collated = node?.collated_results?.[0];
   const base = collated ?? node;
@@ -244,6 +261,23 @@ function normalizeAd(node, term) {
     startedAt = startRaw < 1e12 ? startRaw * 1000 : startRaw;
   }
 
+  const collationCount =
+    typeof base.collation_count === "number" && base.collation_count >= 0
+      ? base.collation_count
+      : undefined;
+  const pageProfileUri = cleanCopy(snap.page_profile_uri);
+  const pageProfilePictureUrl =
+    typeof snap.page_profile_picture_url === "string" &&
+    /^https?:\/\//i.test(snap.page_profile_picture_url)
+      ? snap.page_profile_picture_url
+      : undefined;
+  const pageIsDeleted =
+    typeof base.page_is_deleted === "boolean"
+      ? base.page_is_deleted
+      : typeof snap.page_is_deleted === "boolean"
+        ? snap.page_is_deleted
+        : undefined;
+
   return {
     externalAdId: archiveId,
     pageId,
@@ -261,6 +295,12 @@ function normalizeAd(node, term) {
     searchTerm: term,
     isActive: base.is_active ?? true,
     startedAt,
+    collationCount,
+    pageLikeCount: collectPageLikeCount(snap, base),
+    pageCategories: collectPageCategories(snap),
+    pageProfileUri,
+    pageProfilePictureUrl,
+    pageIsDeleted,
   };
 }
 

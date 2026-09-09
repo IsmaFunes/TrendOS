@@ -79,8 +79,40 @@ describe("scoreStoreQuality", () => {
       activeAdCount: 1000,
       totalAdCount: 5000,
       adActiveDays: 5000,
+      pageLikeCount: 1_000_000,
     });
     expect(score).toBeLessThanOrEqual(1);
+  });
+
+  it("rewards a large Facebook page following", () => {
+    const withoutLikes = scoreStoreQuality({
+      hasStore: false,
+      activeAdCount: 0,
+      totalAdCount: 0,
+      adActiveDays: 0,
+    });
+    const withLikes = scoreStoreQuality({
+      hasStore: false,
+      activeAdCount: 0,
+      totalAdCount: 0,
+      adActiveDays: 0,
+      pageLikeCount: 20_000,
+    });
+    expect(withLikes.score).toBeGreaterThan(withoutLikes.score);
+  });
+
+  it("caps the score and relabels when the Facebook page is deleted", () => {
+    const { score, label } = scoreStoreQuality({
+      hasStore: true,
+      platform: "shopify",
+      activeAdCount: 25,
+      totalAdCount: 150,
+      adActiveDays: 90,
+      pageLikeCount: 50_000,
+      pageIsDeleted: true,
+    });
+    expect(score).toBeLessThanOrEqual(0.15);
+    expect(label).toBe("Página de Facebook eliminada");
   });
 });
 

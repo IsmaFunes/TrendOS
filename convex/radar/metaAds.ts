@@ -56,6 +56,14 @@ const adReturnValidator = v.object({
   storeQualityScore: v.optional(v.number()),
   storeQualityLabel: v.optional(v.string()),
   advertiserActiveAdCount: v.optional(v.number()),
+  /** How many creative variants Meta reports collated under this ad — a live ad-spend/testing-scale signal. */
+  collationCount: v.optional(v.number()),
+  /** Facebook page info, straight from the Ad Library payload — for a "how is this store doing" view alongside the derived quality score. */
+  pageLikeCount: v.optional(v.number()),
+  pageCategories: v.optional(v.array(v.string())),
+  pageProfileUri: v.optional(v.string()),
+  pageProfilePictureUrl: v.optional(v.string()),
+  pageIsDeleted: v.optional(v.boolean()),
 });
 
 const scrapedAdValidator = v.object({
@@ -73,6 +81,12 @@ const scrapedAdValidator = v.object({
   startedAt: v.optional(v.number()),
   isActive: v.optional(v.boolean()),
   metadataJson: v.optional(v.string()),
+  collationCount: v.optional(v.number()),
+  pageLikeCount: v.optional(v.number()),
+  pageCategories: v.optional(v.array(v.string())),
+  pageProfileUri: v.optional(v.string()),
+  pageProfilePictureUrl: v.optional(v.string()),
+  pageIsDeleted: v.optional(v.boolean()),
 });
 
 type ScrapedAd = {
@@ -90,6 +104,12 @@ type ScrapedAd = {
   startedAt?: number;
   isActive?: boolean;
   metadataJson?: string;
+  collationCount?: number;
+  pageLikeCount?: number;
+  pageCategories?: string[];
+  pageProfileUri?: string;
+  pageProfilePictureUrl?: string;
+  pageIsDeleted?: boolean;
 };
 
 function activeDays(startedAt: number | undefined, lastSeenAt: number): number {
@@ -183,7 +203,16 @@ async function upsertAdsBatch(
   let linked = 0;
   const pageCounts = new Map<
     string,
-    { pageName: string; active: number; total: number }
+    {
+      pageName: string;
+      active: number;
+      total: number;
+      pageLikeCount?: number;
+      pageCategories?: string[];
+      pageProfileUri?: string;
+      pageProfilePictureUrl?: string;
+      pageIsDeleted?: boolean;
+    }
   >();
   const nicheDoc = nicheId ? await ctx.db.get(nicheId) : null;
   const gateKeywords = nicheDoc ? flattenedGateTerms(nicheDoc) : [];
@@ -239,6 +268,7 @@ async function upsertAdsBatch(
       storeId,
       searchTerm: ad.searchTerm,
       startedAt: ad.startedAt,
+      collationCount: ad.collationCount,
       lastSeenAt: now,
       isActive,
       metadataJson: ad.metadataJson,
@@ -289,6 +319,17 @@ async function upsertAdsBatch(
     prev.total += 1;
     if (isActive) prev.active += 1;
     prev.pageName = ad.pageName;
+    // Any ad in the batch reporting a real value wins — a null/undefined
+    // from a scrape that didn't happen to carry this field on that
+    // particular ad shouldn't erase a value another ad for the same page
+    // already provided in this same batch.
+    if (ad.pageLikeCount != null) prev.pageLikeCount = ad.pageLikeCount;
+    if (ad.pageCategories != null) prev.pageCategories = ad.pageCategories;
+    if (ad.pageProfileUri != null) prev.pageProfileUri = ad.pageProfileUri;
+    if (ad.pageProfilePictureUrl != null) {
+      prev.pageProfilePictureUrl = ad.pageProfilePictureUrl;
+    }
+    if (ad.pageIsDeleted != null) prev.pageIsDeleted = ad.pageIsDeleted;
     pageCounts.set(ad.pageId, prev);
   }
 
@@ -304,6 +345,15 @@ async function upsertAdsBatch(
         country,
         activeAdCount: Math.max(existing.activeAdCount, counts.active),
         totalAdCount: existing.totalAdCount + counts.total,
+        // This batch's value wins when it reported one — Meta payloads
+        // vary per-request in which fields they include — otherwise the
+        // previously known value is kept rather than erased.
+        pageLikeCount: counts.pageLikeCount ?? existing.pageLikeCount,
+        pageCategories: counts.pageCategories ?? existing.pageCategories,
+        pageProfileUri: counts.pageProfileUri ?? existing.pageProfileUri,
+        pageProfilePictureUrl:
+          counts.pageProfilePictureUrl ?? existing.pageProfilePictureUrl,
+        pageIsDeleted: counts.pageIsDeleted ?? existing.pageIsDeleted,
         lastSeenAt: now,
       });
     } else {
@@ -313,6 +363,11 @@ async function upsertAdsBatch(
         country,
         activeAdCount: counts.active,
         totalAdCount: counts.total,
+        pageLikeCount: counts.pageLikeCount,
+        pageCategories: counts.pageCategories,
+        pageProfileUri: counts.pageProfileUri,
+        pageProfilePictureUrl: counts.pageProfilePictureUrl,
+        pageIsDeleted: counts.pageIsDeleted,
         lastSeenAt: now,
         createdAt: now,
       });
@@ -500,6 +555,8 @@ export const listAdsForUser = query({
           activeAdCount: advertiser?.activeAdCount,
           totalAdCount: advertiser?.totalAdCount,
           adActiveDays,
+          pageLikeCount: advertiser?.pageLikeCount,
+          pageIsDeleted: advertiser?.pageIsDeleted,
         });
         ads.push({
           ...ad,
@@ -509,6 +566,11 @@ export const listAdsForUser = query({
           storeQualityScore: quality.score,
           storeQualityLabel: quality.label,
           advertiserActiveAdCount: advertiser?.activeAdCount,
+          pageLikeCount: advertiser?.pageLikeCount,
+          pageCategories: advertiser?.pageCategories,
+          pageProfileUri: advertiser?.pageProfileUri,
+          pageProfilePictureUrl: advertiser?.pageProfilePictureUrl,
+          pageIsDeleted: advertiser?.pageIsDeleted,
         });
       }
     }
@@ -660,6 +722,8 @@ export const getAd = query({
       activeAdCount: advertiser?.activeAdCount,
       totalAdCount: advertiser?.totalAdCount,
       adActiveDays,
+      pageLikeCount: advertiser?.pageLikeCount,
+      pageIsDeleted: advertiser?.pageIsDeleted,
     });
 
     return {
@@ -668,6 +732,11 @@ export const getAd = query({
       storeQualityScore: quality.score,
       storeQualityLabel: quality.label,
       advertiserActiveAdCount: advertiser?.activeAdCount,
+      pageLikeCount: advertiser?.pageLikeCount,
+      pageCategories: advertiser?.pageCategories,
+      pageProfileUri: advertiser?.pageProfileUri,
+      pageProfilePictureUrl: advertiser?.pageProfilePictureUrl,
+      pageIsDeleted: advertiser?.pageIsDeleted,
     };
   },
 });

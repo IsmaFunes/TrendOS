@@ -12,6 +12,7 @@ import { InvestigatePanel } from "@/components/InvestigatePanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { formatCompactNumber } from "@/lib/utils";
 
 export default function AdDetailPage() {
   const params = useParams();
@@ -123,6 +124,64 @@ export default function AdDetailPage() {
             )}
           </div>
         </article>
+      )}
+
+      {ad && (
+        <Card className="mt-6 p-5">
+          <h2 className="text-base font-medium">Sobre esta tienda</h2>
+          {ad.pageIsDeleted && (
+            <p className="mt-2 text-sm text-destructive">
+              La página de Facebook de este anunciante fue eliminada — puede
+              que ya no esté vendiendo.
+            </p>
+          )}
+          <div className="mt-3 flex flex-wrap items-center gap-4">
+            {ad.pageProfilePictureUrl && (
+              // eslint-disable-next-line @next/next/no-img-element -- external Meta CDN avatar, not worth Next/Image config for a small profile pic
+              <img
+                src={ad.pageProfilePictureUrl}
+                alt=""
+                className="size-12 shrink-0 rounded-full border border-border"
+              />
+            )}
+            <div className="flex flex-col gap-1.5">
+              <div className="flex flex-wrap items-center gap-1.5">
+                {ad.pageLikeCount != null && ad.pageLikeCount > 0 && (
+                  <Badge variant="secondary">
+                    {formatCompactNumber(ad.pageLikeCount)} me gusta en
+                    Facebook
+                  </Badge>
+                )}
+                {ad.pageCategories?.map((c) => (
+                  <Badge key={c} variant="outline">
+                    {c}
+                  </Badge>
+                ))}
+              </div>
+              {ad.storeQualityLabel && (
+                <p className="text-sm text-primary">{ad.storeQualityLabel}</p>
+              )}
+            </div>
+          </div>
+          <div className="mt-4 flex flex-wrap gap-3">
+            {ad.pageProfileUri && (
+              <Button
+                variant="secondary"
+                render={<a href={ad.pageProfileUri} target="_blank" rel="noreferrer" />}
+              >
+                Ver página de Facebook
+                <ExternalLink className="size-3.5" />
+              </Button>
+            )}
+          </div>
+          {ad.collationCount != null && ad.collationCount > 1 && (
+            <p className="mt-4 text-xs text-muted-foreground">
+              Meta está probando {ad.collationCount} variantes de este anuncio
+              — señal de que la tienda está optimizando su inversión en esta
+              pauta.
+            </p>
+          )}
+        </Card>
       )}
 
       {ad && <InvestigatePanel adId={ad._id} />}

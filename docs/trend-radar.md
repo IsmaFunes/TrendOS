@@ -6,7 +6,7 @@ Infra de datos detrás del explorador de anuncios. El producto UI ya no es “ag
 
 - `radarNiches` — catálogo fijo y curado de nichos (slug, label, `scrapeTermsByCountry`), sembrado por `convex/admin/seedNicheCatalog.ts`. Ya no son buckets dinámicos por usuario.
 - `radarNicheAds` / `radarNicheAdRelevance` — ads vinculados a cada nicho y el pase de relevancia (Gemini) compartido por ese nicho.
-- `radarAds` / `radarAdvertisers` / `radarStores` — índice Meta multi-país (AR, US, BR, MX, ES)
+- `radarAds` / `radarAdvertisers` / `radarStores` — índice Meta multi-país (AR, US, BR, MX, ES). `radarAdvertisers` también guarda señales de la página de Facebook tal como las reporta el Ad Library (page likes, categorías, foto, si la página fue eliminada) y `radarAds.collationCount` (variantes de creativo agrupadas bajo ese anuncio) — todo dato real de Meta, sin scrapear el sitio de la tienda. `scoreStoreQuality` (`convex/radar/investigate.ts`) combina esto con las señales derivadas del propio scrape para el "¿le está yendo bien a esta tienda?" que se ve en `/ads` y `/ads/[id]`.
 - `businessProfiles` — onboarding (goal, channels, `nicheIds`: hasta 1 nicho en plan Free, hasta 3 en Pro)
 - `radarProducts` + listings/snapshots — legado de matching/scoring (conservado, no es el path UI MVP)
 
