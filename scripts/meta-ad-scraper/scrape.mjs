@@ -415,6 +415,48 @@ function extractAdsFromGraphqlJson(json, term) {
 }
 
 /**
+ * Meta embeds the FIRST page of search results directly in the initial
+ * document via `<script type="application/json" data-sjs>` hydration
+ * blocks ("ScheduledServerJS") — not through a /api/graphql XHR, so the
+ * onResponse interceptor above structurally can never see it. Confirmed via
+ * a CI debug run on 2026-09-09: pages the scraper logged as "0 ads, N
+ * graphql responses" consistently had real ad data — sometimes thousands of
+ * matches — sitting in one of these blocks, completely untouched. For a
+ * term whose total results all fit on that first page (no scroll-triggered
+ * pagination call ever fires), this was previously a guaranteed 0, in ANY
+ * environment — not a Meta-side block at all.
+ */
+async function extractHydratedAds(page, term) {
+  let blocks;
+  try {
+    blocks = await page.$$eval(
+      'script[type="application/json"][data-sjs]',
+      (els) => els.map((el) => el.textContent ?? ""),
+    );
+  } catch {
+    return [];
+  }
+  const out = [];
+  const seen = new Set();
+  for (const raw of blocks) {
+    if (!raw || !raw.includes("ad_archive_id")) continue;
+    let json;
+    try {
+      json = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    for (const ad of extractAdsFromGraphqlJson(json, term)) {
+      if (!seen.has(ad.externalAdId)) {
+        seen.add(ad.externalAdId);
+        out.push(ad);
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * Scroll budget: keep going up to MAX_SCROLL_ITERATIONS, but stop early once
  * MAX_NO_GROWTH_SCROLLS consecutive scrolls add nothing new — niches are no
  * longer scraped on a user's clock, so it's worth scrolling much deeper than
@@ -507,6 +549,16 @@ async function scrapeTerm(page, term, limit, country, debug) {
   await page.waitForTimeout(jitterMs(2000, 1000));
   page.off("response", onResponse);
 
+  // Top up with whatever Meta server-rendered directly into the page (see
+  // extractHydratedAds) — the interceptor above only ever sees ads that
+  // arrived via a later /api/graphql pagination call, never the first page.
+  for (const ad of await extractHydratedAds(page, term)) {
+    if (!seen.has(ad.externalAdId)) {
+      seen.add(ad.externalAdId);
+      collected.push(ad);
+    }
+  }
+
   if (debug) {
     const dir = resolve("scripts/meta-ad-scraper/debug");
     mkdirSync(dir, { recursive: true });
@@ -519,15 +571,15 @@ async function scrapeTerm(page, term, limit, country, debug) {
   console.log(
     `  → ${ads.length} ads for "${term}" [${country}] (graphql responses: ${graphqlHits})`,
   );
-  // Meta responded substantially but nothing was extractable — genuinely
-  // sparse results don't usually generate this much graphql traffic for
-  // nothing. Confirmed on 2026-09-07: a CI-run scraper hit this pattern
-  // across most terms while the identical terms run locally returned real
-  // ads, consistent with the runner's IP/environment getting a degraded
-  // response Meta doesn't serve to a normal browser session.
+  // Originally read as IP-based degradation (2026-09-07: CI hit this while
+  // local didn't) — a CI debug run on 2026-09-09 disproved that: the
+  // extractHydratedAds() fallback above now covers the actual cause (the
+  // first results page arrives via SSR, not /api/graphql), so this should
+  // be rare going forward. If it still fires, something genuinely new is
+  // blocking both extraction paths — worth a fresh look, not an old one.
   if (ads.length === 0 && graphqlHits >= 10) {
     console.warn(
-      `  ⚠ "${term}" [${country}]: ${graphqlHits} graphql responses yielded 0 ads — possible degraded/blocked response, not necessarily "no results". Re-run with META_ADS_DEBUG=1 to inspect.`,
+      `  ⚠ "${term}" [${country}]: ${graphqlHits} graphql responses and the page's hydrated data both yielded 0 ads — investigate, this used to be attributed to CI IP blocking but that theory didn't hold up. Re-run with META_ADS_DEBUG=1 to inspect.`,
     );
   }
   return ads;
