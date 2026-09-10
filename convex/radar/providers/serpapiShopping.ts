@@ -1,13 +1,19 @@
 /**
- * Mercado Libre Argentina price search via SerpAPI's Google Shopping engine.
+ * Argentina retail price search via SerpAPI's Google Shopping engine.
  *
  * Mercado Libre's official product-search API returns a policy 403 for
- * unverified third-party apps (confirmed in production: every call fails),
- * and anonymously fetching mercadolibre.com.ar pages directly gets
- * redirected to an account-verification bot challenge. Google's Shopping
- * index already has Mercado Libre listings crawled and priced — SerpAPI
- * surfaces that real, structured data without our server ever touching
- * mercadolibre.com.ar.
+ * this app regardless of authentication (confirmed against both the
+ * anonymous and OAuth-authenticated endpoints — the app was never granted
+ * MercadoLibre's elevated API scope), and anonymously fetching
+ * mercadolibre.com.ar pages directly — even from a stealth-Playwright
+ * browser — gets redirected to an account-verification bot challenge
+ * (confirmed from multiple cloud IP ranges, including a GitHub Actions
+ * runner). Google's Shopping index already has real AR retailers'
+ * listings crawled and priced, MercadoLibre among them but by no means
+ * only — SerpAPI surfaces that real, structured data without our server
+ * touching any of those sites directly. Originally filtered to
+ * MercadoLibre-only results; broadened to keep every real AR retailer
+ * Google Shopping already returns for the same query at no extra cost.
  */
 
 import type { ExternalProduct } from "../contracts";
@@ -33,15 +39,13 @@ export type SerpApiShoppingResult = {
   errors: Array<{ message: string; errorType: string }>;
 };
 
-const ML_SOURCE_RE = /mercado\s*libre/i;
-
 /**
- * Search Argentina Google Shopping results, keeping only items sourced
- * from Mercado Libre. Real, structured data (title + numeric price)
- * straight from Google's shopping index — no LLM hallucination risk, no
- * need to fetch mercadolibre.com.ar ourselves.
+ * Search Argentina Google Shopping results across every retailer Google
+ * has indexed for the query. Real, structured data (title + numeric price
+ * + the actual store name) straight from Google's shopping index — no LLM
+ * hallucination risk, no need to fetch any retailer's site ourselves.
  */
-export async function searchMercadoLibreViaShopping(
+export async function searchArgentinaShopping(
   query: string,
   options?: { limit?: number; timeoutMs?: number; maxAttempts?: number },
 ): Promise<SerpApiShoppingResult> {
@@ -77,7 +81,7 @@ export async function searchMercadoLibreViaShopping(
   const rows = result.data.shopping_results ?? [];
   const items: ExternalProduct[] = [];
   for (const row of rows) {
-    if (!row.title || !ML_SOURCE_RE.test(row.source ?? "")) continue;
+    if (!row.title || !row.source) continue;
     const price =
       typeof row.extracted_price === "number" && row.extracted_price > 0
         ? row.extracted_price

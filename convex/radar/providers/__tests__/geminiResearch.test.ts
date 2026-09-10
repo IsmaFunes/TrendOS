@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseSupplierJson } from "../geminiResearch";
+import { parseRetailerListingsJson, parseSupplierJson } from "../geminiResearch";
 
 function offer(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -47,6 +47,63 @@ describe("parseSupplierJson", () => {
   it("still drops offers missing required fields", () => {
     const result = parseSupplierJson(
       JSON.stringify({ suppliers: [offer({ price: undefined })] }),
+    );
+    expect(result).toHaveLength(0);
+  });
+});
+
+function retailerListing(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    title: "Aire acondicionado split frío/calor 3000w",
+    url: "https://www.fravega.com/p/aires-acondicionados/split/aire-acondicionado-abc123/",
+    price: 349999,
+    retailer: "Fravega",
+    ...overrides,
+  };
+}
+
+describe("parseRetailerListingsJson", () => {
+  it("parses a well-formed retailer listing", () => {
+    const result = parseRetailerListingsJson(
+      JSON.stringify({ listings: [retailerListing()] }),
+    );
+    expect(result).toHaveLength(1);
+    expect(result![0]!.retailerName).toBe("Fravega");
+  });
+
+  it("rejects a listing whose URL doesn't belong to the claimed retailer's domain", () => {
+    const result = parseRetailerListingsJson(
+      JSON.stringify({
+        listings: [
+          retailerListing({
+            retailer: "Fravega",
+            url: "https://www.oncity.com/producto/abc123",
+          }),
+        ],
+      }),
+    );
+    expect(result).toHaveLength(0);
+  });
+
+  it("rejects a retailer name outside the known allowlist", () => {
+    const result = parseRetailerListingsJson(
+      JSON.stringify({
+        listings: [
+          retailerListing({
+            retailer: "Tienda Random Inventada",
+            url: "https://tiendarandom.com/producto/abc123",
+          }),
+        ],
+      }),
+    );
+    expect(result).toHaveLength(0);
+  });
+
+  it("still drops listings missing required fields", () => {
+    const result = parseRetailerListingsJson(
+      JSON.stringify({ listings: [retailerListing({ price: undefined })] }),
     );
     expect(result).toHaveLength(0);
   });

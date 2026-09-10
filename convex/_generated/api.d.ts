@@ -40,6 +40,7 @@ import type * as radar_products from "../radar/products.js";
 import type * as radar_providers_aliexpress from "../radar/providers/aliexpress.js";
 import type * as radar_providers_chinaB2b from "../radar/providers/chinaB2b.js";
 import type * as radar_providers_dolarApi from "../radar/providers/dolarApi.js";
+import type * as radar_providers_fravega from "../radar/providers/fravega.js";
 import type * as radar_providers_geminiResearch from "../radar/providers/geminiResearch.js";
 import type * as radar_providers_googleTrends from "../radar/providers/googleTrends.js";
 import type * as radar_providers_manualSocial from "../radar/providers/manualSocial.js";
@@ -47,6 +48,7 @@ import type * as radar_providers_mercadolibre from "../radar/providers/mercadoli
 import type * as radar_providers_mlAuth from "../radar/providers/mlAuth.js";
 import type * as radar_providers_registry from "../radar/providers/registry.js";
 import type * as radar_providers_serpapiShopping from "../radar/providers/serpapiShopping.js";
+import type * as radar_providers_vtexRetailer from "../radar/providers/vtexRetailer.js";
 import type * as radar_providers_wholesale from "../radar/providers/wholesale.js";
 import type * as radar_review from "../radar/review.js";
 import type * as radar_scoring from "../radar/scoring.js";
@@ -94,6 +96,7 @@ declare const fullApi: ApiFromModules<{
   "radar/providers/aliexpress": typeof radar_providers_aliexpress;
   "radar/providers/chinaB2b": typeof radar_providers_chinaB2b;
   "radar/providers/dolarApi": typeof radar_providers_dolarApi;
+  "radar/providers/fravega": typeof radar_providers_fravega;
   "radar/providers/geminiResearch": typeof radar_providers_geminiResearch;
   "radar/providers/googleTrends": typeof radar_providers_googleTrends;
   "radar/providers/manualSocial": typeof radar_providers_manualSocial;
@@ -101,6 +104,7 @@ declare const fullApi: ApiFromModules<{
   "radar/providers/mlAuth": typeof radar_providers_mlAuth;
   "radar/providers/registry": typeof radar_providers_registry;
   "radar/providers/serpapiShopping": typeof radar_providers_serpapiShopping;
+  "radar/providers/vtexRetailer": typeof radar_providers_vtexRetailer;
   "radar/providers/wholesale": typeof radar_providers_wholesale;
   "radar/review": typeof radar_review;
   "radar/scoring": typeof radar_scoring;

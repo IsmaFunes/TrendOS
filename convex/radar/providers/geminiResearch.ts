@@ -864,3 +864,143 @@ Respondé SOLO JSON válido (sin markdown):
   }
   return parsed.slice(0, max);
 }
+
+// ─── Investigate: other AR retailer listing fallback ──────────────────
+// Mercado Libre is the primary marketplace check, but it's not the only
+// place a product is actually sold in Argentina — big-box retailers run
+// their own storefronts and are often where an advertiser's own supplier
+// or a competing reseller lists the same item. These aren't gated behind
+// ML's anonymous-visitor challenge, so listings found this way go through
+// the same content-based verifyUrlContent check as supplier offers instead
+// of the redirect-id check used for ML.
+
+/** Domain allowlist per retailer — a hard backstop against Gemini citing the right title with the wrong (or hallucinated) store domain. */
+export const KNOWN_AR_RETAILER_DOMAINS: Record<string, RegExp> = {
+  Fravega: /(^|\.)fravega\.com$/i,
+  OnCity: /(^|\.)oncity\.com$/i,
+  Falabella: /(^|\.)falabella\.com\.ar$/i,
+  Musimundo: /(^|\.)musimundo\.com$/i,
+  Garbarino: /(^|\.)garbarino\.com$/i,
+  "Compra Ágil": /(^|\.)compraagil\.com\.ar$/i,
+};
+
+export type RetailerListingCandidate = {
+  title: string;
+  url: string;
+  price: number;
+  currency: string;
+  imageUrl?: string;
+  retailerName: string;
+};
+
+function isKnownRetailerUrl(url: string, retailerName: string): boolean {
+  const domainRe = KNOWN_AR_RETAILER_DOMAINS[retailerName];
+  if (!domainRe) return false;
+  try {
+    return domainRe.test(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
+/** Exported for unit tests — pure JSON parsing/filtering, no network calls. */
+export function parseRetailerListingsJson(
+  text: string,
+): RetailerListingCandidate[] | null {
+  if (!text) return null;
+  const cleaned = text
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+  let data: unknown;
+  try {
+    data = JSON.parse(cleaned.slice(start, end + 1)) as unknown;
+  } catch {
+    return null;
+  }
+  if (typeof data !== "object" || data === null || !("listings" in data)) {
+    return null;
+  }
+  const raw = (data as { listings?: unknown }).listings;
+  if (!Array.isArray(raw)) return null;
+
+  const out: RetailerListingCandidate[] = [];
+  for (const item of raw) {
+    if (typeof item !== "object" || item === null) continue;
+    const row = item as Record<string, unknown>;
+    const title = typeof row.title === "string" ? row.title.trim() : "";
+    const url = typeof row.url === "string" ? row.url.trim() : "";
+    const price = asPositiveNumber(row.price);
+    const retailerName =
+      typeof row.retailer === "string" ? row.retailer.trim() : "";
+    // Drop anything missing a field we need, or whose URL doesn't actually
+    // belong to the retailer claimed — a mismatch here is exactly how a
+    // hallucinated or misattributed citation would slip through.
+    if (!title || !url || price == null || !retailerName) continue;
+    if (!isKnownRetailerUrl(url, retailerName)) continue;
+    const imageRaw = typeof row.img === "string" ? row.img.trim() : "";
+    const imageUrl =
+      imageRaw && (imageRaw.startsWith("http://") || imageRaw.startsWith("https://"))
+        ? imageRaw.slice(0, 500)
+        : undefined;
+    out.push({
+      title: title.slice(0, 200),
+      url: url.slice(0, 500),
+      price,
+      currency: asCurrencyCode(row.currency, "ARS"),
+      imageUrl,
+      retailerName,
+    });
+  }
+  return out;
+}
+
+/**
+ * Find real, active listings for a concrete product across big-box AR
+ * retailer storefronts (Fravega, OnCity, etc.) via Google Search grounding —
+ * MercadoLibre isn't the only entry point for "is this actually sold in
+ * Argentina, and at what price". Fail-closed without GEMINI_API_KEY; never
+ * invents a listing, price, or URL.
+ */
+export async function researchArgentineRetailerListings(input: {
+  productName: string;
+  retailers?: string[];
+  maxResults?: number;
+}): Promise<RetailerListingCandidate[]> {
+  const apiKey = requireGeminiApiKey();
+  const max = input.maxResults ?? 5;
+  const retailerNames = (
+    input.retailers?.filter((r) => KNOWN_AR_RETAILER_DOMAINS[r]).length
+      ? input.retailers
+      : Object.keys(KNOWN_AR_RETAILER_DOMAINS)
+  ).filter((r) => KNOWN_AR_RETAILER_DOMAINS[r]);
+
+  const prompt = `Sos un buscador de publicaciones de productos en tiendas online argentinas.
+
+Usá Google Search para encontrar publicaciones REALES y actualmente activas para:
+"${input.productName}" en estas tiendas: ${retailerNames.join(", ")}.
+
+Reglas:
+- La URL debe ser la ficha de producto real dentro del sitio oficial de esa tienda
+  (no un buscador, no una categoría, no un comparador de precios de terceros).
+- retailer debe ser exactamente uno de estos nombres: ${retailerNames.join(", ")}.
+- Precio en ARS, numérico, tal como figura en la publicación — nunca lo inventes.
+- NO inventes publicaciones, precios ni URLs. Si no encontrás nada confiable en
+  alguna tienda, omitila (no hace falta cubrir todas).
+- Máximo ${max} resultados en total, priorizando los más relevantes.
+
+Respondé SOLO JSON válido (sin markdown):
+{"listings":[{"title":"Nombre del producto","url":"https://www.fravega.com/...","price":149999,"retailer":"Fravega","img":"https://...jpg"}]}`;
+
+  const { text, finishReason } = await callGeminiWithSearch(apiKey, prompt);
+  const parsed = parseRetailerListingsJson(text);
+  if (!parsed) {
+    throw new Error(
+      `Gemini retailer listing search unparseable${finishReason ? ` (${finishReason})` : ""}`,
+    );
+  }
+  return parsed.slice(0, max);
+}

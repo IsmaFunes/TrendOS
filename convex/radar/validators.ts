@@ -26,6 +26,9 @@ export const dataSourceValidator = v.union(
   v.literal("alibaba"),
   v.literal("meta_ad_library"),
   v.literal("google_shopping"),
+  v.literal("retailer_research"),
+  /** Real scraped data (own site's embedded JSON or public API), not an LLM guess — see providers/fravega.ts, providers/vtexRetailer.ts. */
+  v.literal("retailer_scrape"),
   v.literal("simulated"),
 );
 
@@ -125,6 +128,8 @@ export type DataSource =
   | "alibaba"
   | "meta_ad_library"
   | "google_shopping"
+  | "retailer_research"
+  | "retailer_scrape"
   | "simulated";
 
 export type Classification =
@@ -254,7 +259,7 @@ export const mlMatchResultValidator = v.object({
   sellerName: v.optional(v.string()),
   matchScore: v.number(),
   badge: mlMatchBadgeValidator,
-  /** "mercadolibre" = official API; "gemini_research" = web-search fallback. */
+  /** See investigate.ts's rankMlMatches for what each `source` value means. */
   source: dataSourceValidator,
 });
 

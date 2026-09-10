@@ -4,8 +4,11 @@
  *
  * Pipeline: (1) find other Meta ads pushing the same product, weighted by
  * how long they've run and how credible the advertiser looks; (2) match the
- * product on MercadoLibre; (3) find suppliers in AR/China/Brazil; (4) blend
- * all of it into a 0–10 opportunity score plus a profit estimate. Results
+ * product on MercadoLibre (the primary check) and, in parallel, on other
+ * big-box AR retailer storefronts (Fravega, OnCity, etc.) as secondary
+ * entry points for "is this actually sold here, and at what price"; (3)
+ * find suppliers in AR/China/Brazil; (4) blend all of it into a 0–10
+ * opportunity score plus a profit estimate. Results
  * are cached per (ad, user) in `radarAdInvestigations` — re-running is a
  * deliberate action, not implicit background work.
  */
@@ -31,16 +34,20 @@ import { flattenedGateTerms } from "./niches";
 import { calculateMargin } from "./logistics";
 import { getCurrentUserOrNull } from "../lib/auth";
 import { searchMadeInChina } from "./providers/chinaB2b";
-import { searchMercadoLibreViaShopping } from "./providers/serpapiShopping";
+import { searchFravega } from "./providers/fravega";
+import { searchArgentinaShopping } from "./providers/serpapiShopping";
+import { searchAllVtexRetailers } from "./providers/vtexRetailer";
 import { structuredLog } from "./http";
 import {
   DOLAR_API_SOURCE_LABEL,
   fetchBlueDolarRate,
 } from "./providers/dolarApi";
 import {
+  researchArgentineRetailerListings,
   researchMercadoLibreListings,
   researchSuppliersForProduct,
   type MercadoLibreListingCandidate,
+  type RetailerListingCandidate,
   type SupplierCandidate,
 } from "./providers/geminiResearch";
 import type { ExternalProduct } from "./contracts";
@@ -239,7 +246,13 @@ export type RankedMlMatch = {
   sellerName?: string;
   matchScore: number;
   badge: "best_match" | "match" | "alternative";
-  /** "mercadolibre" = official API; "gemini_research" = web-search fallback. */
+  /**
+   * "google_shopping"/"gemini_research" = MercadoLibre via an index/LLM
+   * guess (official API is unreachable, see below); "retailer_scrape" =
+   * real data fetched directly from a retailer's own site/API (Fravega,
+   * OnCity); "retailer_research" = LLM web-search guess for a retailer
+   * without a real scraper yet.
+   */
   source: DataSource;
 };
 
@@ -290,7 +303,7 @@ export function rankMlMatches(
     return {
       matches: [],
       warning:
-        "No encontramos publicaciones en MercadoLibre para este producto.",
+        "No encontramos publicaciones en MercadoLibre ni en otras tiendas para este producto.",
     };
   }
 
@@ -988,6 +1001,81 @@ async function verifyAll<T extends { url: string; title: string }>(
   return candidates.filter((_c, i) => flags[i]);
 }
 
+const ML_HOST_RE = /(^|\.)mercadolibre\.com(\.[a-z]{2})?$/i;
+const ML_ITEM_ID_RE = /\bMLA-?(\d{6,})\b/i;
+
+/** Exported for unit tests — pure URL parsing, no network. */
+export function extractMlItemId(url: string): string | null {
+  const match = url.match(ML_ITEM_ID_RE);
+  return match ? `MLA${match[1]}` : null;
+}
+
+/**
+ * A delisted/paused Mercado Libre item doesn't 404 — the permalink silently
+ * redirects to an unrelated "you might also like" product instead. That's
+ * the literal "I open the link and it's a different product" bug report:
+ * content-based verification (verifyUrlContent, above) can't reliably catch
+ * it either, because ML's anonymous-visitor account-verification challenge
+ * page *also* returns 200 with unrelated content for perfectly live
+ * listings — trying to content-match through that produced as many false
+ * rejections of real listings as true ones, which is why the Gemini ML
+ * fallback below deliberately skips verifyUrlContent. Comparing the item id
+ * encoded in the URL before vs. after following redirects sidesteps that:
+ * it needs no page content, so a same-URL challenge page never triggers a
+ * false drop — only an actual redirect to a *different* item id does.
+ * Returns null (treated as "can't tell, don't penalize") when the URL isn't
+ * a recognizable ML item permalink or the request itself is inconclusive.
+ */
+export async function verifyMercadoLibreUrlStable(url: string): Promise<boolean | null> {
+  const requestedId = extractMlItemId(url);
+  if (!requestedId) return null;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), VERIFY_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        redirect: "follow",
+        signal: controller.signal,
+        headers: { "User-Agent": VERIFY_USER_AGENT },
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!res.ok) return null;
+    const finalId = extractMlItemId(res.url);
+    if (!finalId) return null;
+    return finalId === requestedId;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Drops MercadoLibre matches whose permalink now resolves to a different
+ * item id (see verifyMercadoLibreUrlStable) — non-ML matches and ML
+ * candidates whose stability we couldn't determine pass through unchanged.
+ */
+async function dropStaleMercadoLibreListings<T extends { externalUrl?: string }>(
+  items: T[],
+): Promise<{ kept: T[]; staleCount: number }> {
+  const flags = await Promise.all(
+    items.map((item) => {
+      if (!item.externalUrl) return Promise.resolve<boolean | null>(null);
+      let host: string;
+      try {
+        host = new URL(item.externalUrl).hostname;
+      } catch {
+        return Promise.resolve<boolean | null>(null);
+      }
+      if (!ML_HOST_RE.test(host)) return Promise.resolve<boolean | null>(null);
+      return verifyMercadoLibreUrlStable(item.externalUrl).catch(() => null);
+    }),
+  );
+  const kept = items.filter((_item, i) => flags[i] !== false);
+  return { kept, staleCount: items.length - kept.length };
+}
+
 function isDisplayableCandidate(ad: {
   pageName: string;
   body?: string;
@@ -1328,31 +1416,65 @@ export const investigateAd = action({
       return { status: "error", errorMessage: "Anuncio no encontrado" };
     }
 
-    // Mercado Libre's official search API is a dead end for unverified
-    // third-party apps (policy 403 regardless of credentials) — real web
-    // search replaces it entirely: SerpAPI's Google Shopping index for
-    // structured, hallucination-free prices, and Gemini's Google-Search
-    // grounding for real listing permalinks. Neither requires our server
-    // to fetch mercadolibre.com.ar directly (which bot-gates anonymous
-    // requests behind an account-verification challenge).
+    // Mercado Libre's official API is a dead end for this app — confirmed
+    // with a real OAuth-authenticated call, not just an anonymous one: the
+    // access token resolves fine, but every endpoint (search, product
+    // search, even a single item lookup) returns a policy-level 403
+    // (PA_UNAUTHORIZED_RESULT_FROM_POLICIES) because this app was never
+    // granted MercadoLibre's elevated "trusted partner" API scope — that's
+    // an account approval only MercadoLibre can grant, not a bug here.
+    // Directly fetching mercadolibre.com.ar is equally closed: even a
+    // stealth-Playwright browser gets redirected to an account-verification
+    // challenge, confirmed from several cloud IP ranges including a GitHub
+    // Actions runner, pointing at an IP/ASN-level gate no amount of browser
+    // fingerprint evasion can get around. Real web search replaces both:
+    // SerpAPI's Google Shopping index for structured, hallucination-free
+    // prices across every AR retailer it has indexed (not just ML), plus
+    // real direct scrapes of retailers that aren't bot-gated (Fravega,
+    // OnCity), and Gemini's Google-Search grounding as a last-resort guess
+    // for ML permalinks and retailers without a real scraper yet. None of
+    // these require our server to fetch mercadolibre.com.ar directly.
     const mlItems: ExternalProduct[] = [];
-    const [shoppingResult, geminiListingsResult] = await Promise.allSettled([
-      searchMercadoLibreViaShopping(searchQuery, { limit: 10 }),
+    const [
+      shoppingResult,
+      geminiListingsResult,
+      retailerListingsResult,
+      fravegaResult,
+      vtexResult,
+    ] = await Promise.allSettled([
+      // Real, structured data across every AR retailer Google Shopping has
+      // indexed for this query (MercadoLibre included, not exclusively) —
+      // no LLM guess, no site of ours to bot-gate.
+      searchArgentinaShopping(searchQuery, { limit: 10 }),
       geminiEnabled
         ? researchMercadoLibreListings({ productName })
         : Promise.resolve<MercadoLibreListingCandidate[]>([]),
+      // Gemini-grounded guessing is now only needed for retailers without a
+      // real scraper below (Fravega/VTEX stores) — no LLM is asked to guess
+      // at a URL a plain fetch can already fetch for real.
+      geminiEnabled
+        ? researchArgentineRetailerListings({
+            productName,
+            retailers: ["Falabella", "Musimundo", "Garbarino", "Compra Ágil"],
+          })
+        : Promise.resolve<RetailerListingCandidate[]>([]),
+      // Real data, no LLM involved: Fravega's own search page embeds
+      // structured JSON, and OnCity's VTEX storefront exposes a public
+      // search API — neither is bot-gated like MercadoLibre.
+      searchFravega(searchQuery),
+      searchAllVtexRetailers(searchQuery),
     ]);
 
     if (shoppingResult.status === "fulfilled") {
       mlItems.push(...shoppingResult.value.items);
       if (shoppingResult.value.items.length === 0 && shoppingResult.value.errors.length > 0) {
         warnings.push(
-          `MercadoLibre (Google Shopping): ${shoppingResult.value.errors[0]!.message}`,
+          `Tiendas (Google Shopping): ${shoppingResult.value.errors[0]!.message}`,
         );
       }
     } else {
       warnings.push(
-        `MercadoLibre (Google Shopping): ${shoppingResult.reason instanceof Error ? shoppingResult.reason.message : "error"}`,
+        `Tiendas (Google Shopping): ${shoppingResult.reason instanceof Error ? shoppingResult.reason.message : "error"}`,
       );
     }
 
@@ -1383,9 +1505,64 @@ export const investigateAd = action({
       );
     }
 
+    if (retailerListingsResult.status === "fulfilled") {
+      // Unlike ML, these storefronts aren't known to bot-gate anonymous
+      // fetches — content-based verification (the same check used for
+      // supplier offers) is reliable here.
+      const verifiedRetailerListings = await verifyAll(
+        retailerListingsResult.value.map((l) => ({ ...l, url: l.url, title: l.title })),
+      );
+      mlItems.push(
+        ...verifiedRetailerListings.map((l) => ({
+          externalId: l.url,
+          source: "retailer_research" as const,
+          title: l.title,
+          externalUrl: l.url,
+          imageUrl: l.imageUrl,
+          price: l.price,
+          currency: l.currency,
+          sellerName: l.retailerName,
+        })),
+      );
+      if (
+        retailerListingsResult.value.length > 0 &&
+        verifiedRetailerListings.length === 0
+      ) {
+        warnings.push(
+          "Encontramos publicaciones en otras tiendas (Fravega, OnCity, etc.) pero no pudimos confirmarlas — descartadas.",
+        );
+      }
+    } else if (geminiEnabled) {
+      warnings.push(
+        `Otras tiendas (búsqueda web): ${retailerListingsResult.reason instanceof Error ? retailerListingsResult.reason.message : "error"}`,
+      );
+    }
+
+    // Real scraped data — no LLM guess, no bot-gate to defeat, so no
+    // separate verification pass is needed (unlike the ML/Gemini paths
+    // above). Both fail closed to an empty list on their own, so a
+    // "fulfilled" Promise.allSettled result here is always safe to use
+    // directly.
+    if (fravegaResult.status === "fulfilled") {
+      mlItems.push(...fravegaResult.value);
+    }
+    if (vtexResult.status === "fulfilled") {
+      mlItems.push(...vtexResult.value);
+    }
+
+    const { kept: verifiedMlItems, staleCount: staleMlCount } =
+      await dropStaleMercadoLibreListings(mlItems);
+    if (staleMlCount > 0) {
+      warnings.push(
+        staleMlCount === 1
+          ? "Descartamos 1 publicación de MercadoLibre que ahora redirige a otro producto."
+          : `Descartamos ${staleMlCount} publicaciones de MercadoLibre que ahora redirigen a otro producto.`,
+      );
+    }
+
     const { matches: mlMatches, warning: mlWarning } = rankMlMatches(
       searchQuery,
-      mlItems,
+      verifiedMlItems,
       3,
     );
     if (mlWarning) warnings.push(mlWarning);

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { searchMercadoLibreViaShopping } from "../providers/serpapiShopping";
+import { searchArgentinaShopping } from "../providers/serpapiShopping";
 
-describe("searchMercadoLibreViaShopping", () => {
+describe("searchArgentinaShopping", () => {
   const prevKey = process.env.SERPAPI_API_KEY;
 
   afterEach(() => {
@@ -23,12 +23,12 @@ describe("searchMercadoLibreViaShopping", () => {
 
   it("fails closed without SERPAPI_API_KEY", async () => {
     delete process.env.SERPAPI_API_KEY;
-    await expect(searchMercadoLibreViaShopping("termo")).rejects.toThrow(
+    await expect(searchArgentinaShopping("termo")).rejects.toThrow(
       /SERPAPI_API_KEY/,
     );
   });
 
-  it("keeps only Mercado Libre-sourced results with a real price", async () => {
+  it("keeps results from any real retailer with a real price, not just MercadoLibre", async () => {
     process.env.SERPAPI_API_KEY = "test-key";
     mockFetch({
       shopping_results: [
@@ -52,16 +52,27 @@ describe("searchMercadoLibreViaShopping", () => {
           title: "Termo sin precio",
           source: "Mercado Libre",
         },
+        {
+          position: 4,
+          title: "Termo sin fuente",
+          extracted_price: 25000,
+        },
       ],
     });
 
-    const result = await searchMercadoLibreViaShopping("termo acero inoxidable 1l");
-    expect(result.items).toHaveLength(1);
+    const result = await searchArgentinaShopping("termo acero inoxidable 1l");
+    expect(result.items).toHaveLength(2);
     expect(result.items[0]).toMatchObject({
       source: "google_shopping",
       title: "Termo Acero Inoxidable 1L",
       price: 28000,
       currency: "ARS",
+      sellerName: "mercadolibre.com.ar",
+    });
+    expect(result.items[1]).toMatchObject({
+      title: "Termo Frávega",
+      price: 31000,
+      sellerName: "Frávega",
     });
   });
 
@@ -76,7 +87,7 @@ describe("searchMercadoLibreViaShopping", () => {
       }),
     );
 
-    const result = await searchMercadoLibreViaShopping("termo", {
+    const result = await searchArgentinaShopping("termo", {
       timeoutMs: 500,
       maxAttempts: 1,
     });

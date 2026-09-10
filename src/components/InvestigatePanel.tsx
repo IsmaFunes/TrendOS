@@ -49,10 +49,27 @@ const CLASSIFICATION_LABEL: Record<string, { label: string; variant: BadgeVarian
 };
 
 const ML_BADGE_LABEL: Record<string, { label: string; variant: BadgeVariant }> = {
-  best_match: { label: "Mejor match", variant: "default" },
-  match: { label: "Coincidencia", variant: "secondary" },
-  alternative: { label: "Alternativa", variant: "outline" },
+  best_match: { label: "Mismo producto", variant: "default" },
+  match: { label: "Mismo producto", variant: "secondary" },
+  alternative: { label: "Similar", variant: "outline" },
 };
+
+type ExistenceStatus = "exact_match" | "similar_only" | "not_found";
+
+/**
+ * The question a seller actually asks first — "does this exist here, or
+ * just something like it?" — collapsed from the per-match badges so the
+ * panel can lead with one clear verdict instead of making the user scan a
+ * grid of cards to figure out which case they're in.
+ */
+function deriveExistenceStatus(
+  mlMatches: ReadonlyArray<{ badge: string }>,
+): ExistenceStatus {
+  if (mlMatches.length === 0) return "not_found";
+  return mlMatches.some((m) => m.badge === "best_match" || m.badge === "match")
+    ? "exact_match"
+    : "similar_only";
+}
 
 export function InvestigatePanel({ adId }: InvestigatePanelProps) {
   const investigation = useQuery(api.radar.investigate.getMyInvestigation, { adId });
@@ -77,6 +94,10 @@ export function InvestigatePanel({ adId }: InvestigatePanelProps) {
   };
 
   const isStale = investigation != null && investigation.expiresAt < now;
+  const existenceStatus = investigation
+    ? deriveExistenceStatus(investigation.mlMatches)
+    : null;
+  const bestMlMatch = investigation?.mlMatches[0];
 
   return (
     <section className="mt-10 border-t border-border pt-8">
@@ -84,7 +105,8 @@ export function InvestigatePanel({ adId }: InvestigatePanelProps) {
         <div>
           <h2>Investigar</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Anuncios similares, coincidencias en MercadoLibre y proveedores para este producto.
+            ¿Se vende en Argentina, a qué precio y te conviene? Chequeamos MercadoLibre, otras
+            tiendas, anuncios similares y proveedores.
           </p>
         </div>
         <Button onClick={() => void handleInvestigate()} disabled={running}>
@@ -112,6 +134,108 @@ export function InvestigatePanel({ adId }: InvestigatePanelProps) {
               Este resultado tiene más de 7 días. Probá &ldquo;Volver a investigar&rdquo; para actualizarlo.
             </p>
           )}
+
+          {/* Existence verdict — the first question a seller actually asks: does this exist here, or just something like it? */}
+          {existenceStatus === "exact_match" && (
+            <Card className="border-accent-300/40 bg-accent-300/5 p-4">
+              <p className="text-sm font-medium">Este producto ya se vende en Argentina</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {bestMlMatch
+                  ? `Lo encontramos en ${bestMlMatch.sellerName ?? "MercadoLibre"} a ${formatMoney(bestMlMatch.price, bestMlMatch.currency)}. Usalo como referencia directa de precio de venta.`
+                  : "Encontramos coincidencias exactas — revisá el detalle en “Dónde se vende”."}
+              </p>
+            </Card>
+          )}
+          {existenceStatus === "similar_only" && (
+            <Card className="border-border bg-muted/40 p-4">
+              <p className="text-sm font-medium">
+                No encontramos el producto exacto, pero hay similares
+              </p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {bestMlMatch
+                  ? `Lo más parecido que encontramos: "${bestMlMatch.title}" por ${formatMoney(bestMlMatch.price, bestMlMatch.currency)}. Sirve como referencia de precio de categoría — confirmá que sea realmente comparable antes de usarlo.`
+                  : "Revisá los productos similares en “Dónde se vende” como referencia de precio de categoría."}
+              </p>
+            </Card>
+          )}
+          {existenceStatus === "not_found" && (
+            <Card className="border-border bg-muted/40 p-4">
+              <p className="text-sm font-medium">
+                No encontramos este producto en ningún comercio argentino
+              </p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {investigation.similarAds.length > 0
+                  ? `Puede ser una oportunidad (todavía nadie lo importa) o baja demanda local — igual encontramos ${investigation.similarAds.length} ${investigation.similarAds.length === 1 ? "otro anuncio" : "otros anuncios"} de Meta promocionándolo, señal de que se vende en otros mercados.`
+                  : "Puede ser una oportunidad (todavía nadie lo importa) o simplemente baja demanda local — sin una publicación de referencia, no hay forma de saberlo de antemano."}
+              </p>
+            </Card>
+          )}
+
+          {/* Marketplace + retailer matches */}
+          <div>
+            <h3 className="text-sm font-medium">Dónde se vende</h3>
+            {investigation.mlMatches.length === 0 ? (
+              <p className="mt-2 text-sm text-muted-foreground">
+                No encontramos publicaciones en MercadoLibre ni en otras tiendas para este
+                producto.
+              </p>
+            ) : (
+              <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-3">
+                {investigation.mlMatches.map((m) => {
+                  const badge = ML_BADGE_LABEL[m.badge] ?? ML_BADGE_LABEL.alternative!;
+                  return (
+                    <Card key={m.externalId} className="gap-0 overflow-hidden p-0">
+                      <div className="flex aspect-square items-center justify-center bg-muted">
+                        {m.imageUrl ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={m.imageUrl} alt="" className="h-full w-full object-contain" />
+                        ) : (
+                          <span className="text-xs text-muted-foreground">Sin imagen</span>
+                        )}
+                      </div>
+                      <div className="flex flex-1 flex-col gap-1.5 p-3">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <Badge variant={badge.variant} className="w-fit">
+                            {badge.label}
+                          </Badge>
+                          {m.sellerName && (
+                            <Badge variant="outline" className="w-fit">
+                              {m.sellerName}
+                            </Badge>
+                          )}
+                        </div>
+                        <p className="line-clamp-2 text-[13px] font-medium">{m.title}</p>
+                        <p className="text-[13px] text-foreground">
+                          {formatMoney(m.price, m.currency)}
+                        </p>
+                        {m.soldQuantity != null && m.soldQuantity > 0 && (
+                          <p className="text-xs text-muted-foreground">
+                            {m.soldQuantity} vendidos
+                          </p>
+                        )}
+                        {(m.source === "gemini_research" || m.source === "retailer_research") && (
+                          <p className="text-[11px] text-muted-foreground">
+                            Encontrado vía búsqueda web. Confirmá el precio.
+                          </p>
+                        )}
+                        {m.permalink && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="mt-1 w-fit"
+                            render={<a href={m.permalink} target="_blank" rel="noreferrer" />}
+                          >
+                            Ver publicación
+                            <ExternalLink className="size-3" />
+                          </Button>
+                        )}
+                      </div>
+                    </Card>
+                  );
+                })}
+              </div>
+            )}
+          </div>
 
           {/* Score + profit */}
           <div className="grid gap-4 sm:grid-cols-[auto_1fr]">
@@ -273,64 +397,6 @@ export function InvestigatePanel({ adId }: InvestigatePanelProps) {
                     </div>
                   </Card>
                 ))}
-              </div>
-            )}
-          </div>
-
-          {/* MercadoLibre matches */}
-          <div>
-            <h3 className="text-sm font-medium">En MercadoLibre</h3>
-            {investigation.mlMatches.length === 0 ? (
-              <p className="mt-2 text-sm text-muted-foreground">
-                No encontramos publicaciones en MercadoLibre para este producto.
-              </p>
-            ) : (
-              <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-3">
-                {investigation.mlMatches.map((m) => {
-                  const badge = ML_BADGE_LABEL[m.badge] ?? ML_BADGE_LABEL.alternative!;
-                  return (
-                    <Card key={m.externalId} className="gap-0 overflow-hidden p-0">
-                      <div className="flex aspect-square items-center justify-center bg-muted">
-                        {m.imageUrl ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img src={m.imageUrl} alt="" className="h-full w-full object-contain" />
-                        ) : (
-                          <span className="text-xs text-muted-foreground">Sin imagen</span>
-                        )}
-                      </div>
-                      <div className="flex flex-1 flex-col gap-1.5 p-3">
-                        <Badge variant={badge.variant} className="w-fit">
-                          {badge.label}
-                        </Badge>
-                        <p className="line-clamp-2 text-[13px] font-medium">{m.title}</p>
-                        <p className="text-[13px] text-foreground">
-                          {formatMoney(m.price, m.currency)}
-                        </p>
-                        {m.soldQuantity != null && m.soldQuantity > 0 && (
-                          <p className="text-xs text-muted-foreground">
-                            {m.soldQuantity} vendidos
-                          </p>
-                        )}
-                        {m.source === "gemini_research" && (
-                          <p className="text-[11px] text-muted-foreground">
-                            Encontrado vía búsqueda web. Confirmá el precio.
-                          </p>
-                        )}
-                        {m.permalink && (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="mt-1 w-fit"
-                            render={<a href={m.permalink} target="_blank" rel="noreferrer" />}
-                          >
-                            Ver publicación
-                            <ExternalLink className="size-3" />
-                          </Button>
-                        )}
-                      </div>
-                    </Card>
-                  );
-                })}
               </div>
             )}
           </div>

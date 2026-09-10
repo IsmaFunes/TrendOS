@@ -4,12 +4,14 @@ import {
   capSuppliersByCountry,
   computeInvestigationScore,
   computeProfitEstimate,
+  extractMlItemId,
   fetchImageInlineData,
   isRelevantSupplierTitle,
   parseExtractedProductSignal,
   rankMlMatches,
   rankSimilarAds,
   scoreStoreQuality,
+  verifyMercadoLibreUrlStable,
   verifyUrlContent,
   type SimilarAdCandidate,
   type SupplierOffer,
@@ -468,6 +470,72 @@ describe("verifyUrlContent", () => {
     mockFetch({ ok: true, text: "<html>Publicación pausada por el vendedor</html>" });
     const ok = await verifyUrlContent("https://articulo.mercadolibre.com.ar/paused", "Termo acero");
     expect(ok).toBe(false);
+  });
+});
+
+describe("extractMlItemId", () => {
+  it("extracts the item id from an articulo.mercadolibre.com.ar permalink", () => {
+    expect(
+      extractMlItemId("https://articulo.mercadolibre.com.ar/MLA-1234567890-termo-_JM"),
+    ).toBe("MLA1234567890");
+  });
+
+  it("extracts the item id regardless of surrounding path shape", () => {
+    expect(extractMlItemId("https://www.mercadolibre.com.ar/p/MLA1234567890")).toBe(
+      "MLA1234567890",
+    );
+  });
+
+  it("returns null when the URL has no recognizable MLA item id", () => {
+    expect(extractMlItemId("https://www.mercadolibre.com.ar/ofertas")).toBeNull();
+  });
+});
+
+describe("verifyMercadoLibreUrlStable", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function mockFetch(response: { ok: boolean; url: string }) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: response.ok, url: response.url }),
+    );
+  }
+
+  it("returns null (can't tell) when the URL has no MLA item id", async () => {
+    const ok = await verifyMercadoLibreUrlStable("https://www.mercadolibre.com.ar/ofertas");
+    expect(ok).toBeNull();
+  });
+
+  it("returns true when the resolved URL keeps the same item id", async () => {
+    mockFetch({
+      ok: true,
+      url: "https://articulo.mercadolibre.com.ar/MLA-1234567890-termo-_JM",
+    });
+    const ok = await verifyMercadoLibreUrlStable(
+      "https://articulo.mercadolibre.com.ar/MLA-1234567890-termo-_JM",
+    );
+    expect(ok).toBe(true);
+  });
+
+  it("returns false when a delisted item silently redirects to a different product", async () => {
+    mockFetch({
+      ok: true,
+      url: "https://articulo.mercadolibre.com.ar/MLA-9999999999-otra-cosa-_JM",
+    });
+    const ok = await verifyMercadoLibreUrlStable(
+      "https://articulo.mercadolibre.com.ar/MLA-1234567890-termo-_JM",
+    );
+    expect(ok).toBe(false);
+  });
+
+  it("returns null on a non-ok response rather than penalizing an ambiguous bot-gate page", async () => {
+    mockFetch({ ok: false, url: "https://articulo.mercadolibre.com.ar/MLA-1234567890-termo-_JM" });
+    const ok = await verifyMercadoLibreUrlStable(
+      "https://articulo.mercadolibre.com.ar/MLA-1234567890-termo-_JM",
+    );
+    expect(ok).toBeNull();
   });
 });
 
